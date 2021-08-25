@@ -1,0 +1,848 @@
+                    <meta charset="utf-8" emacsmode="-*- markdown -*">
+                    **6.08 Final Project Week4 Write Up - Team 28**
+        John Rao, Kameron Dawson, Camila Miranda-Llovera, Umang Bansal, Nick Dyette
+
+
+
+Deliverables
+===============================================================================
+
+1. Refactor existing apps
+2. Store WiFi networks and usernames
+3. Improve the Clock App
+4. Improve the Game App
+5. Implement the Music App
+6. Implement in-app notifications in Mail and Messaging Apps
+
+Refactor Existing Apps
+================================================================================
+Game App
+-----------------------------------------------------------------------------------
+In the Post request, the code waits until sending_request == false before printing the results of the http request. In the Get request, the server code was modified to return a json. The ESP code uses the following code to parse the json string and isolate the necessary data. Then, the Get request also waits for request_sending == false before printing the results.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+StaticJsonDocument<1000> doc;
+DeserializationError error = deserializeJson(doc, response);
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
+
+Weather App
+-----------------------------------------------------------------------------------
+The way we refactored the weather app is that the state transitions that involve sending a request and then waiting for its response to be parsed and printed, all require a local loading variable to be true and a global response_sending variable to be false. The loading variable is set to true whenever a response is sent, but the response_sending variable is only false once the request is complete.
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if(loading && !response_sending){
+            loading = false;
+            weather_state = DISPLAY_INFO;
+            prev_state = SELECT_PLACE;
+        }
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ 
+<iframe width="560" height="315" src="https://www.youtube.com/embed/kLMHBBPD8Go" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+Mail App
+-------------------------------------------------------------------------------
+The updated Mail App now integrates the dual core processing. All HTTP requests are being sent on the second core. When the user is logging in or sending a mail or viewing new mails the system draws a loading animation on the first core while the HTTP request is being sent on the second core. Since the HTTP requests to check number of new messages are now handled on the second core, it doesn't block the app's *handle_user_input()* thus allowing the user to scroll or type while the new requests to check *unread_num* is being sent every other second. For the states where the user need the server response to proceed (like the ones previously mentioned), a loading animation will be displayed. This is handled by a new logic gate and the new class variable *bool loading*. Whenever the system calls these functions to send a request, *loading* will be set to *true*
+and in the *draw_screen()* function of these specific states *draw_loading()* will be called if *loading==true*. This acts as an intermeediate state before the actual screen of that state is drawn. *loading* will be set to *false* and the server response would be parsed accordingly once the request is done sending. Similarly, I'm using another variable *bool checkingNum* to determine when to update the *unread_num* variable and display the number of new messages. 
+
+Code snippets of some of these updates are shown here:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void MailApp::draw_loading(){
+    if(prev_state != LOADING_SCREEN){
+        tft.fillScreen(TFT_BLACK);
+        loading_animation.set_dimensions(64, 80, 12);
+        prev_state = LOADING_SCREEN;
+    }
+    loading_animation.draw_screen();
+}
+
+uint8_t MailApp::handle_user_input() {
+
+    #other code omitted
+
+    else if (mail_state == LOGIN_MENU){
+            memset(user_email, 0, sizeof(user_email));
+            if(loading && !request_sending){
+                loading = false;
+                storeSavedAccounts(); #function that parses server response
+                reset_screen();
+            }
+        #other code omitted
+        }
+
+    else if(mail_state == USER_LOGIN){ 
+     #other code omitted
+     if(loading && !request_sending){
+            loading = false;
+            reset_screen();
+            if(strncmp(response, "True", 4)==0){
+            strcpy(user_email, email_temp);
+            memset(email_temp, 0, sizeof(email_temp));
+            checkUnreadNum();
+            timer = millis();
+            prev_state = USER_LOGIN;
+            mail_state = OPTION_MENU;
+            }
+            else{
+                login_failed = true;
+                firstTime = true;
+            }
+        }
+    }
+    else if (mail_state == OPTION_MENU){
+            if(checkingNum && !request_sending){
+                unread_num = atoi(response);
+                checkingNum = false;
+            }
+
+        }
+}
+
+void MailApp::draw_screen() {
+    if(mail_state == LOGIN_MENU){
+        if(loading){
+            draw_loading();
+        }
+        else{
+        #code to draw the log in menu
+        }
+    #other states are similar
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/dhOwYS0K6Q4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Messaging App
+--------------------------------------------------------------------------------
+In addition to integrating the dual core functionality similar to how it's done in Mail App(discussed above), I also updated how user can naigate between the different states within the messaging app, since now the instance of the Messaging App is not getting deleted every time we return to main Home screen. Like in the Mail App, the user can now return to the main menu of messaging app by long press RIGHT(*button_input_one*). The messaging app has fewer states than the Mail App, so the loading animation will only be drawn when the user is sending an message or checking all unread messages or checking message history. Updating *unread_num* behaves the same way as the Mail App, which will only update the displayed number on the screen when request is done sending. 
+
+Code snippets of some of these updates are shown here:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+uint8_t MessagingApp::handle_user_input() {
+    if(button_input_one == 2){
+        checkUnreadNum();
+        memset(message, 0, sizeof(message));
+        memset(other, 0, sizeof(other));
+        otherSelected = false;
+        messageSelected = false;
+        firstTime = true;
+        prev_selected = 3;
+        select_state = 1;
+        msg_index = 1;
+        prev_state = text_state;
+        text_state = SELECT_MENU;
+    }
+    else if (text_state == SELECT_MENU){// main menu 
+        //select option using DOWN button (button 2)
+        if(checkingNum && !request_sending){
+            checkingNum = false;
+            unread_num = atoi(response);
+        }
+        #other code similar to previous version
+    }
+    #other code omitted
+    else if(text_state==DISPLAY_MESSAGE){
+        if(sending && !request_sending){
+            sending = false;
+            prev_state = SEND_MESSAGE;
+        }
+        else if(loading && !request_sending){
+            loading = false;
+            prev_state = SELECT_MESSAGE;
+        }
+        #other code similar to previous version
+    }
+}
+#MessagingApp::draw_sreen() is similar to that of the Mail App
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/koRu_M8Bn4Y" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Store WiFi Networks and Usernames
+================================================================================
+Specifications:
+1. Store users' favorite WiFi network and username in the non-volatile memory on the ESP32. 
+2. On the login screen it will prompt the user if they want to use the favorite network/username or enter a different one.
+
+ESP
+-------------------------------------------------------------------------------
+It utilizes the EEPROM library to write to and read from the flash memory on the ESP32. 
+
+On the login screen if no network has been saved then users enter their network and password like usual, and then it prompts them if they want to save this network and password. If a network has already been saved then it just asks the user if they want to connect to this network. 
+
+On the login screen if no username has been saved then users enter their username and password like usual, and then it prompts them if they want to save this username and password. If a username has already been saved then it just asks the user if they want to login as this user. 
+
+-------------------------------------------------------------------------------
+Code Appendix
+-------------------------------------------------------------------------------
+Writing to and Reading from Flash Memory
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void LoginApp::store_string_eeprom(char* write_string, uint8_t start_addr) {
+    // writing byte-by-byte to EEPROM
+    for (int i = 0; i < 19; i++) {
+        EEPROM.write(start_addr + i, write_string[i]);
+    }
+    EEPROM.commit();
+}
+
+void LoginApp::retrieve_string_eeprom(char* read_string, uint8_t start_addr) {
+    // reading byte-by-byte from EEPROM
+    for (int i = 0; i < 19; i++) {
+        byte readValue = EEPROM.read(start_addr + i);
+
+        if (readValue == 0xff || readValue == 0) {
+            // 0xff is the default value of an empty EEPROM cell
+            // 0 is the int value for the null character
+            read_string[i] = 0;
+            break;
+        }
+
+        char readValueChar = char(readValue);
+        read_string[i] = readValueChar;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/H7uGeIoW0Mk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+Improve Clock App
+================================================================================
+Specifications:
+1. Users can view favorite locations and help screens. 
+2. They can add and delete favorite locations.
+
+ESP
+-------------------------------------------------------------------------------
+In the favorites state it displays to the user all of their favorite cities (up to 5) and buttons to go back to the home screen, delete a city, and add a new city. If the user clicks on one of the cities they are taken to the clock display state where it shows the time for that city.
+
+The favorite cities and timezones are stored as two lists on the ESP, and are only updated on the initial request to the server and on requests when a city is added or deleted.
+
+In the help state it displays text detailing the functionality of all the buttons for each screen.
+
+
+
+-------------------------------------------------------------------------------
+
+Server
+-------------------------------------------------------------------------------
+GET requests:
+Selects all the favorite cities for a user from an sqlite3 database. Then sends a GET request to OpenWeatherMap API for each city to get its timezone offset from UTC. Returns the cities and timezones as two lists in a JSON string.
+
+POST requests:
+If the request includes a parameter "delete" that is set to true then it deletes the city provided in the request iff the city is in the database for the user. Otherwise it inserts the city iff the city is not already in the database for the user and the number of cities in the database for the user is less than 5.
+
+
+-------------------------------------------------------------------------------
+<iframe width="560" height="315" src="https://www.youtube.com/embed/LgLBqAGzXD4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Improve Game App
+================================================================================
+Specifications: 
+1. User should be able to choose between difficulty levels
+2. Each difficulty level should be faster than the one before
+
+Server
+-------------------------------------------------------------------------------
+The database on the server needed to be reformatted to now include a column for the difficulty level of the game. The Post request then filters the SQL query by user and level to find the user's highest score for that level. 
+
+ESP
+-------------------------------------------------------------------------------
+This code created two new state machines to implement levels in the game. The first, called playing_state, denoted whether the user was currently in the state selecting a difficulty level (playing_state = 0), playing the game (playing_state = 1), or in the game over state (playing_state = 2). If playing_state > 0, the game functioned the same as before. If playing_state = 0, the user encounters another state machine called menu_state. Menu_state holds a number encoding which difficulty level the user has currently selected. The user can use their button to navigate between menu_states and click button three to select a difficulty level. The user's current choice is shown by a small circle to the right of the selected choice. Once button three has been clicked, the code calculates loop_time, a variable depicting how many milliseconds must pass between each re-drawing of the game screen. The higher the difficulty level, the lower the loop_timer. It then automatically transitions to playing_state = 1, where the game proceeds as normal. When the user loses the game, playing state = 2, and when the user presses button three again, both state machines reset to 0 so the process can repeat. 
+
+
+-------------------------------------------------------------------------------
+<iframe width="560" height="315" src="https://www.youtube.com/embed/tPkw3z7rZSU" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+
+Music App
+================================================================================
+Specifications:
+1. User can select which song they want to be played
+2. Songs are played through the mp3 module
+
+ESP
+-------------------------------------------------------------------------------
+Implementation 1:
+- In terms of our user interface, we created 3 states. An initial menu state, a select menu state, and a song playing state. 
+- The initial menu state is just an introduction screen to the application and prompts the user for any button input to select a song. 
+- Upon receiving an input we then transition into the select menu state. In this state the user is able to select which track they want, which are numbered 1 through 10. 
+- By using the button control system, they can cycle through the tracks on the menu. 
+- We were unable to display the name of the songs, because of the nature of the MP3 player library which only allows the files to be assigned to numbers. 
+- Upon selecting a song, we then transition to the song state in which the user is told which track is being played, and are prompted on how to pause/play and skip/rewind the current song. 
+
+Implementation 2:
+- Apart from one extra button, the MP3 module is the only other part that we have had to include in our dev kit since the start.
+- Following the data sheet and the schematic from the 6.08 website, we were able to get the music playing on a test file.
+- We integrated a new library called DFRobotDFPlayerMini which was how we actually played the songs from the SD card on the MP3 module.
+- In order to play the songs and do various functions like skip, playback, and pause, we used functions like myDFPlayer.play(1).
+
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/a7mcJGx7Jvo" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+-------------------------------------------------------------------------------
+
+
+Implement notifications from Mail and Messaging Apps
+================================================================================
+Specifications:
+1. Users will get a notification displayed at the top of the screen anywhere on the phone notifying them if they have new messages or emails.
+
+ESP
+-------------------------------------------------------------------------------
+In the phone class on every iteration of the loop function it calls check_notifications function in the NotificationsApp (child class of App). In this function it sends a request to the server every 10 seconds to see if there are any unread messages or emails. The function returns true if the notification is no longer displayed, in which case phone calls the reset_screen function for the currently open app to get rid of the notification.
+
+Additionally, on every iteration of the loop function it calls NotificationsApp's draw_screen function which draws the notification at the top of the screen for 5 seconds if there is a new notification. If there is 1 unread message or email it also displays who it's from; otherwise it just displays the number of unread messages or emails.
+
+-------------------------------------------------------------------------------
+
+Server
+-------------------------------------------------------------------------------
+On the server side, all GET request for notification will be handled at *'http://608dev-2.net/sandbox/sc/team28/final_project/python/Notification/notification.py'* and it needs a single argument *user*. I also added an additional database that keeps track of what to notify the user. This new database has two tables, *mail_table* and *message_table*, that deals with notifications from messaging app and mail app respectively. The *message_table* has 4 columns: *TIME_*, *USER*, *SENDER*, and *NOTIFY* while the *mail_table* has columns: *ID*, *USER*, *SENDER* and *NOTIFY*. *TIME_* and *ID* are used to keep track of the specific new message/mail we are notifying the user about. Since we only want to notify the user once about new mail and new messages, *NOTIFY* column are first added to the corresponding table as 'YES' and updated to 'NO' whenever the device sends a request to retrieve notifications. In order to enable the notification functionality for messaging app, I also modified the messaging app's server endpoint so that whenever an user sends a message, the server also inserts that message's information into the *message_table* in the notification database with *NOTIFY* as *YES*. The messaging server will also set *NOTIFY* to 'NO' for all the messages the user checked in the notification database in case the user checks his messages before a request for notification is sent. Code snippet for message server changes shown here:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+with sqlite3.connect(notif_db) as cursor:
+    cursor.execute("""CREATE TABLE IF NOT EXISTS message_table (TIME_ timestamp, USER text, SENDER text, NOTIFY text);""")
+    cursor.execute("""INSERT INTO message_table VALUES(?,?,?,?);""", (datetime.datetime.now(), user_receiver, user_sender, 'YES'))
+
+#other code in messaging server omitted
+
+with sqlite3.connect(notif_db) as cursor:
+    for msg in to_return:
+        cursor.execute("""UPDATE message_table SET NOTIFY = 'NO' WHERE USER = ? AND TIME_ = ?;""",(user_me, msg[0]))
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+When the ESP sends automated requests to notification server endpoint it will return the number of entries in the *message_table* that has *NOTIFY='YES'* for the specified user. The notification server handles getting email notification similar to the *checkUnread.py* server endpoint for the Mail App. It first retrieves the specified user's saved email accounts from the *emailInfo.db*(discusess in previous week's write up). Then if the user has saved email accounts, it goes through Gmail API verification flow and calls the Gmail API to get all the unread emails of all the email accounts the user has. If the user's emails have unread emails and they are not yet in the notification database it first inserts the corresponding information into the *mail_table* with *NOTIFY='YES'*. Then the server will count the number of entries with *NOTIFY='YES'* and reset *NOTIFY='NO'*, similar to how it handles the notification for new messages. The server eventually returns the count in each table in JSON format. Note that if the count is 1 for either mail or message it will also return the *SENDER* of that entry.
+
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/K3lIPWRqLvs" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+-------------------------------------------------------------------------------
+Code Appendix
+-------------------------------------------------------------------------------
+Parsing favorite cities and timezones returned from server 
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void ClockApp::deserialize_timezones_json() {
+	// Deserialize the JSON document
+	StaticJsonDocument<1000> doc;
+	DeserializationError error = deserializeJson(doc, response);
+
+	// Test if parsing succeeds.
+	if (error) {
+		Serial.print(F("deserializeJson() failed: "));
+		Serial.println(error.f_str());
+		return;
+	}
+
+	favorites_size = doc["favorite_timezones"].size();
+	uint8_t i = 0;
+	while (i < favorites_size) {
+		sprintf(favorite_cities[i], doc["favorite_cities"][i]);
+		favorite_timezones[i] = doc["favorite_timezones"][i];
+		i++;
+	}
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Displaying of favorites screen
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+tft.setTextSize(1);
+for (int i = 0; i < favorites_size; i++) {
+    if (i == vertical_select_state) {
+        tft.fillRect(8, 12+24*i, 112, 12, TFT_WHITE);
+        tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+        tft.drawString(favorite_cities[i], 60-strlen(favorite_cities[i])*3, 14+24*i);
+    } else {
+        tft.fillRect(8, 12+24*i, 112, 12, TFT_BLACK);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK); // set color of font to white foreground, black background
+        tft.drawString(favorite_cities[i], 60-strlen(favorite_cities[i])*3, 14+24*i);
+    }
+}
+
+tft.fillRect(2, 132, 40, 12, TFT_WHITE);
+tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+tft.drawString("back", 2+8, 132+2);
+
+tft.fillRect(44, 132, 40, 12, TFT_WHITE);
+tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+tft.drawString("delete", 44+2, 132+2);
+
+tft.fillRect(86, 132, 40, 12, TFT_WHITE);
+tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+tft.drawString("add", 86+11, 132+2);
+
+if (vertical_select_state == favorites_size) {
+    if (horizontal_select_state == 0) {
+        tft.drawRect(1, 131, 42, 14, TFT_BLACK);
+        tft.drawRect(43, 131, 42, 14, TFT_HOME_SCREEN);
+        tft.drawRect(85, 131, 42, 14, TFT_HOME_SCREEN);
+    } else if (horizontal_select_state == 1) {
+        tft.drawRect(1, 131, 42, 14, TFT_HOME_SCREEN);
+        tft.drawRect(43, 131, 42, 14, TFT_BLACK);
+        tft.drawRect(85, 131, 42, 14, TFT_HOME_SCREEN);
+    } else {
+        tft.drawRect(1, 131, 42, 14, TFT_HOME_SCREEN);
+        tft.drawRect(43, 131, 42, 14, TFT_HOME_SCREEN);
+        tft.drawRect(85, 131, 42, 14, TFT_BLACK);
+    }
+} else {
+    tft.drawRect(1, 131, 42, 14, TFT_HOME_SCREEN);
+    tft.drawRect(43, 131, 42, 14, TFT_HOME_SCREEN);
+    tft.drawRect(85, 131, 42, 14, TFT_HOME_SCREEN);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Displaying of help screen
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// help info
+tft.setTextSize(1);
+tft.setTextColor(TFT_RED, TFT_HOME_SCREEN);
+tft.drawString("Home, Favs, Search", 7, 15);
+tft.setTextColor(TFT_WHITE, TFT_HOME_SCREEN);
+tft.drawString("button 5: y scroll", 7, 25);
+tft.drawString("button 19: x scroll", 7, 35);
+tft.drawString("button 3: enter", 7, 45);
+
+tft.setTextColor(TFT_RED, TFT_HOME_SCREEN);
+tft.drawString("Help", 7, 70);
+tft.setTextColor(TFT_WHITE, TFT_HOME_SCREEN);
+tft.drawString("button 5: home", 7, 80);
+
+tft.setTextColor(TFT_RED, TFT_HOME_SCREEN);
+tft.drawString("Clock", 7, 105);
+tft.setTextColor(TFT_WHITE, TFT_HOME_SCREEN);
+tft.drawString("button 5: home", 7, 115);
+tft.drawString("button 19: analog", 7, 125);
+tft.drawString("to digital", 7, 135);
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Server code
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def get_request(request):
+    # gets favorite cities and their timezones
+    response_dict = {}
+    try:
+        user = request["values"]["user"]
+
+        # get cities
+        with sqlite3.connect(favorites_db) as c:
+            # create table if not created
+            c.execute('''CREATE TABLE IF NOT EXISTS favorite_cities (user TEXT, city TEXT);''')
+
+            city_rows = c.execute('''SELECT * FROM favorite_cities WHERE user = ?;''', (user,)).fetchall()
+
+        # get timezone
+        cities = []
+        timezones = []
+        for city_row in city_rows:
+            city = city_row[1]
+            cities.append(city)
+            timezone_url = "".join(["http://api.openweathermap.org/data/2.5/weather?q=", city, "&appid=29f8a4a49873dff02420270cea336c09"])
+            timezone_response = requests.get(timezone_url)
+            timezone_response_dict = json.loads(timezone_response.text)
+            timezones.append(int(timezone_response_dict["timezone"]))
+        response_dict["favorite_cities"] = cities
+        response_dict["favorite_timezones"] = timezones
+
+        response = json.dumps(response_dict)
+        return response
+    except Exception as e:
+        # return the exception for debugging
+        # if hasattr(e, 'message'):
+        # 	return e.message
+        # else:
+        # 	return e
+
+        return "False"
+
+def post_request(request):
+    # insert or delete a favorite city
+    try:
+        user = request["form"]["user"]
+        city = request["form"]["city"]
+        delete = request["form"]["delete"]
+
+        with sqlite3.connect(favorites_db) as c:
+            # create table if not created
+            c.execute('''CREATE TABLE IF NOT EXISTS favorite_cities (user TEXT, city TEXT);''')
+
+            if delete == "True":
+                city_row = c.execute('''SELECT * FROM favorite_cities WHERE user = ? AND city = ?;''', (user, city)).fetchone()
+                if city_row:
+                    c.execute('''DELETE FROM favorite_cities WHERE user = ? AND city = ?;''', (user, city))
+                    return "True"
+                return "False"
+            else:
+                city_rows = c.execute('''SELECT * FROM favorite_cities WHERE user = ?;''', (user,)).fetchall()
+                city_row = c.execute('''SELECT * FROM favorite_cities WHERE user = ? AND city = ?;''', (user, city)).fetchone()
+                if len(city_rows) < 5 and city_row == None:
+                    c.execute('''INSERT INTO favorite_cities VALUES(?,?);''', (user, city))
+                    return "True"
+                return "False"
+    except Exception as e:
+        # return the exception for debugging
+        # if hasattr(e, 'message'):
+        # 	return e.message
+        # else:
+        # 	return e
+
+        return "False"
+
+def request_handler(request):
+    if request["method"] == "GET":
+        return get_request(request)
+    elif request["method"] == "POST":
+        return post_request(request)
+    else:
+        return "Only GET and POST supported"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+C++ Code for changes to draw_screen:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if (playing_state == 0) {
+    tft.setTextColor(TFT_BLACK, TFT_WHITE);
+    tft.drawString("Level 1", 5, 10);
+    tft.drawString("Level 2", 5, 20);
+    tft.drawString("Level 3", 5, 30);
+    tft.drawString("Level 4", 5, 40);
+    tft.drawString("Level 5", 5, 50);
+    tft.drawCircle(100, menu_state*10 + 8, 2, TFT_BLACK);
+    if (menu_state > 0) {
+        tft.drawCircle(100, menu_state*10 - 2, 2, TFT_WHITE);
+    } else {
+        tft.drawCircle(100, 48, 2, TFT_WHITE);
+    }
+    
+    prev_playing_state = 0;
+
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+C++ Code for changes to handle_user_input:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if (playing_state == 0) {
+    if (menu_state >= 4) {
+        if (button_input_two > 0) {
+            menu_state = 0;
+        }
+    } else {
+        if (button_input_two > 0) {
+            menu_state += 1;
+        }
+    }
+    if (button_input_three == 1){
+        playing_state = 1;
+        loop_time = 50 - (10*menu_state);
+        Serial.printf("loop_time = %d\n", loop_time);
+        Serial.printf("menu_state = %d\n", menu_state);
+    }
+}
+if (button_input_one > 0){
+    Serial.println("in button_input_one > 0");
+    game_state = SELECT_MENU;
+    prev_state = PLAY_GAME;
+    playing_state = 0;
+    prev_playing_state = 1;
+    menu_state = 0;
+    tft.fillScreen(TFT_WHITE);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Python Code for changes to scoredatabase.db
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+try:
+    score = int(request['form']['score'])
+    user = request['form']['user']
+    level = int(request['form']['level'])
+    
+except ValueError:
+    # return e here or use your own custom return message for error catch
+    #be careful just copy-pasting the try except as it stands since it will catch *all* Exceptions not just ones related to number conversion.
+    return "Error: score is not a number"
+
+c.execute('''INSERT into score_table VALUES (?,?,?,?);''', (user, score, level, datetime.datetime.now()))
+
+things = c.execute('''SELECT score FROM score_table WHERE user = ? AND level = ?;''',(user, level)).fetchall()
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+Music Code for handle_user_input:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+uint8_t MusicApp::handle_user_input() {
+        if (music_state == MENU){
+            if(button_input_two > 0 || button_input_one > 0 || button_input_three == 1){
+                song_count = myDFPlayer.readFileCounts();
+                
+                if (song_count > 10){
+                    song_count = 10;
+                }
+                for (int i = 0; i< song_count; i++){
+                    char printsong[10];
+                    sprintf(printsong, "TRACK %d", i);
+                    sprintf(songs[i], printsong);
+                }
+                music_state = SELECT;
+                prev_state = MENU;
+          }
+        }
+        else if (music_state == SELECT){
+            if (button_input_one > 0){//for going back to the main menu
+                music_state = MENU;
+                prev_state = SELECT;
+            }
+    
+            if (button_input_two > 0){
+                current_song++;
+                current_song %= song_count;
+                
+            }
+    
+            if (button_input_three == 1){
+                myDFPlayer.play(current_song + 1);
+                music_state = SONG;
+                prev_state = SELECT;
+    
+            }
+        }
+        else if (music_state == SONG){
+                if(button_input_one > 0){ //pause and play button
+                        if(song_state == true){
+                                myDFPlayer.pause();
+                                song_state = false;
+                        }else{
+                                myDFPlayer.start();
+                                song_state = true; 
+                        }
+                }
+                if(button_input_two == 1){
+                        myDFPlayer.next(); //skip button
+                        current_song ++;
+                        current_song %= song_count;
+            tft.drawString("          ", 50, 110);
+            song_state = true;
+                }
+                if(button_input_two == 2){
+                        myDFPlayer.previous(); // go back button
+                        current_song --;
+                        current_song %= song_count;
+            tft.drawString("          ", 50, 110);
+            song_state = true;
+                }
+            if(button_input_three == 1){
+                music_state = MENU;
+                prev_state = SONG;
+            }
+        }
+        if (button_input_three == 2) {
+            myDFPlayer.pause();
+            current_song = 0;
+            music_state = MENU;
+            return HOME; // switch to the home app
+        } else {
+            return NO_CHANGE; // stay on the music app
+        }
+    
+    }
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Notifications ESP code:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+bool NotificationsApp::check_notifications() {
+    if (show_notification && millis() - show_timer >= SHOW_PERIOD) {
+        show_notification = false;
+        show_timer = millis();
+        return true;
+    }
+
+    if (millis() - timer >= GETTING_PERIOD && !request_sending) {
+        // check notifications
+        char destination[115];
+        sprintf(destination, "http://608dev-2.net/sandbox/sc/team28/final_project/python/Notification/notification.py?user=%s", username);
+        http_request(
+            "GET",
+            "",
+            destination,
+            "608dev-2.net"
+        );
+        loading = true;
+        timer = millis();
+    }
+
+    if (loading && !request_sending) {
+        deserialize_notifications_json();
+        loading = false;
+        if (message_num != 0 || mail_num != 0) {
+            show_notification = true;
+            show_timer = millis();
+        }
+    }
+    return false;
+}
+
+void NotificationsApp::deserialize_notifications_json() {
+	// Deserialize the JSON document
+	StaticJsonDocument<1000> doc;
+	DeserializationError error = deserializeJson(doc, response);
+
+	// Test if parsing succeeds.
+	if (error) {
+		Serial.print(F("deserializeJson() failed: "));
+		Serial.println(error.f_str());
+		return;
+	}
+
+    message_num = doc["messageNum"];
+    mail_num = doc["mailNum"];
+
+    if (message_num == 1) {
+        sprintf(message_from, doc["messageFrom"]);
+        Serial.println(message_from);
+    }
+    if (mail_num == 1) {
+        sprintf(mail_from, doc["mailFrom"]);
+        Serial.println(mail_from);
+    }
+    Serial.println("parsing finished");
+}
+
+void NotificationsApp::draw_screen() {
+    if (show_notification) {
+        Serial.println("drawing screen");
+        tft.setTextSize(1);
+        tft.setTextColor(TFT_WHITE, TFT_KEY_GRAY);
+        tft.fillRect(0, 0, 128, 42, TFT_KEY_GRAY);
+
+        char notification[21];
+        if (message_num == 1 && mail_num == 0) {
+            tft.drawString("unread message from", 4, 12);
+            strncpy(notification, message_from, 20);
+            tft.drawString(notification, 4, 22);
+        } else if (message_num == 1 && mail_num == 1) {
+            tft.drawString("unread message from", 4, 2);
+            strncpy(notification, message_from, 20);
+            tft.drawString(notification, 4, 12);
+
+            tft.drawString("unread email from", 4, 22);
+            strncpy(notification, mail_from, 20);
+            tft.drawString(notification, 4, 32);
+        } else if (message_num == 1 && mail_num > 1) {
+            tft.drawString("unread message from", 4, 5);
+            strncpy(notification, message_from, 20);
+            tft.drawString(notification, 4, 15);
+
+            sprintf(notification, "%d unread emails", mail_num);
+            tft.drawString(notification, 4, 28);
+        } else if (message_num == 0 && mail_num == 1) {
+            tft.drawString("unread email from", 4, 12);
+            strncpy(notification, mail_from, 20);
+            tft.drawString(notification, 4, 22);
+        } else if (message_num > 1 && mail_num == 1) {
+            sprintf(notification, "%d unread messages", message_num);
+            tft.drawString(notification, 4, 5);
+
+            tft.drawString("unread email from", 4, 18);
+            strncpy(notification, mail_from, 20);
+            tft.drawString(notification, 4, 28);
+        } else if (message_num > 1 && mail_num == 0) {
+            sprintf(notification, "%d unread messages", message_num);
+            tft.drawString(notification, 4, 17);
+        } else if (message_num == 0 && mail_num > 1) {
+            sprintf(notification, "%d unread emails", mail_num);
+            tft.drawString(notification, 4, 17);
+        } else if (message_num > 1 && mail_num > 1) {
+            // 2 lines
+            sprintf(notification, "%d unread messages", message_num);
+            tft.drawString(notification, 4, 8);
+
+            sprintf(notification, "%d unread emails", mail_num);
+            tft.drawString(notification, 4, 24);
+        }
+        Serial.println("finished drawing screen");
+        show_notification = false; // find a way to get rid of this line
+    }
+}
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Notifications Server code:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+notif_db = '/var/jail/home/team28/final_project/python/Notification/notifications.db'
+email_db = '/var/jail/home/team28/final_project/python/EmailApp/emailInfo.db'
+SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.modify']
+
+def get_service():
+    creds = None
+    if os.path.exists('/var/jail/home/team28/final_project/python/EmailApp/token.json'):
+        creds = Credentials.from_authorized_user_file('/var/jail/home/team28/final_project/python/EmailApp/token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file('/var/jail/home/team28/final_project/python/EmailApp/credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('/var/jail/home/team28/final_project/python/EmailApp/token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    service = build('gmail', 'v1', credentials=creds)
+    return service
+
+def get_messages(service, user):
+    results = service.users().messages().list(userId=user, labelIds=['INBOX'], q="is:unread").execute()
+    messages = results.get('messages', [])
+    if not messages:
+        return None
+    else:
+        return messages
+
+def request_handler(request):
+    if request['method'] == "GET":
+        try:
+            user_me = request['values']['user']
+        except Exception as e:
+            return e
+        #get email accounts associated with this user
+        with sqlite3.connect(email_db) as ec:
+            ec.execute("""CREATE TABLE IF NOT EXISTS acct_user(USER text, ACCT text, PASSCODE text);""")
+            accounts = ec.execute("""SELECT (ACCT) FROM acct_user WHERE USER = ?;""", (user_me,)).fetchall()
+        #get all unread emails of associated email accounts
+        return_dict = {'messageNum': 0, 'mailNum': 0}
+        if len(accounts) > 0:
+            serv = get_service()
+            #msg_dict = dict()
+            msg_count = 0
+            #check with notification db
+            with sqlite3.connect(notif_db) as cursor:
+                cursor.execute("""CREATE TABLE IF NOT EXISTS mail_table (ID text, USER text, SENDER text, NOTIFY text);""")
+                for acct in accounts:
+                    messages = get_messages(serv, acct[0])
+                    if messages:
+                        for message in messages:
+                            curr_id = message['id']
+                            msg = serv.users().messages().get(userId=acct[0], id=curr_id).execute()
+                            headers = msg['payload']['headers']
+                            for header in headers:
+                                if header['name'] == 'from':
+                                    curr_sender = header['value']
+                                    existing = cursor.execute("""SELECT * FROM mail_table WHERE ID = ? AND USER = ? AND SENDER = ?;""", (curr_id, user_me, curr_sender)).fetchall()
+                                    if len(existing) == 0:
+                                        cursor.execute("""INSERT INTO mail_table VALUES(?,?,?,?);""", (curr_id, user_me, curr_sender, 'YES'))
+                mail_info = cursor.execute("""SELECT (SENDER) FROM mail_table WHERE USER = ? AND NOTIFY = 'YES';""",(user_me,)).fetchall()
+                cursor.execute("""UPDATE mail_table SET NOTIFY = 'NO' WHERE USER = ?;""", (user_me,))
+                if len(mail_info) != 0:
+                    return_dict['mailNum'] = len(mail_info)
+                    if len(mail_info) == 1:
+                        return_dict["mailFrom"] = mail_info[0][0]
+        #check message notification db
+        with sqlite3.connect(notif_db) as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS message_table (TIME_ timestamp, USER text, SENDER text, NOTIFY text);""")
+            message_info = c.execute("""SELECT (SENDER) FROM message_table WHERE USER = ? AND NOTIFY = 'YES';""",(user_me,)).fetchall()
+            c.execute("""UPDATE message_table SET NOTIFY = 'NO' WHERE USER = ?;""", (user_me,))
+        if len(message_info) != 0:
+            return_dict['messageNum'] = len(message_info)
+            if len(message_info) == 1:
+                return_dict["messageFrom"] = message_info[0][0]
+
+        return json.dumps(return_dict, indent=4)
+
+    else:
+        return "invalid request type"
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+<!-- Markdeep: --><style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace}</style><script src="markdeep.min.js" charset="utf-8"></script><script src="https://morgan3d.github.io/markdeep/latest/markdeep.min.js?" charset="utf-8"></script><script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script>

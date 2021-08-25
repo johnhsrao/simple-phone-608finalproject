@@ -1,0 +1,1322 @@
+                    <meta charset="utf-8" emacsmode="-*- markdown -*">
+                    **6.08 Final Project Week2 Write UP - Team 28**
+        John Rao, Kameron Dawson, Camila Miranda-Llovera, Umang Bansal, Nick Dyette
+
+
+
+Deliverables
+===============================================================================
+
+1. Implement the Mail App
+2. Improve the Weather App and UI
+3. Improve the Clock App
+4. Implement Login Screen
+5. Improve the Framework
+6. Improve the Game App
+
+Mail App
+================================================================================
+Specifications:
+
+1. User can log into a gmail account
+2. System saves a specific user's email account
+2. Users can check the number of unread mails
+3. Users can read new emails sent to them
+4. Users can write emails and send them to any email accounts
+
+
+Server 
+-------------------------------------------------------------------------------
+ Implementations:
+
+ There are three different server endpoints on the server the mail app could potentially make HTTP requests to. The server will then respond accordingly to either check users' input credentials or make appropriate calls to Gmail API.
+
+ 1. First server code at *"http://608dev-2.net/sandbox/sc/team28/final_project/python/EmailApp/sendMail.py"* takes only POST requests with body arguments: *subject, messsage, sender, receiver*. It first calls *get_service* to go through Gmail API's authorization flow and creates a service instance. Then it uses information from the HTTP requests to call *create_message* and *send_message*, which converts them to MIME email messages and encodes messages as base64url strings before calling Gmail API's *messages.send()*. If no error returned from Gmail API calls, the server returns a confirmation stating "Your Email has been sent", otherwise it returns "Unsuccessful". Parts of this server code is shown below:
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.modify']
+
+def get_service():
+    creds = None
+    if os.path.exists('/var/jail/home/team28/final_project/python/EmailApp/token.json'):
+        creds = Credentials.from_authorized_user_file('/var/jail/home/team28/final_project/python/EmailApp/token.json', SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file('/var/jail/home/team28/final_project/python/EmailApp/credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        with open('/var/jail/home/team28/final_project/python/EmailApp/token.json', 'w') as token:
+            token.write(creds.to_json())
+
+    service = build('gmail', 'v1', credentials=creds)
+    return service
+
+def create_message(sender, to, subject, message_text):
+
+  message = MIMEText(message_text)
+  message['to'] = to
+  message['from'] = sender
+  message['subject'] = subject
+  return {'raw': base64.urlsafe_b64encode(message.as_string().encode()).decode()}
+
+
+def send_message(service, user_id, message):
+  try:
+    message = (service.users().messages().send(userId=user_id, body=message).execute())
+    print ('Message Id: %s' % message['id'])
+    return message
+  except errors.HttpError as error:
+    print ('An error occurred: %s' % error)
+
+def request_handler(request):
+  if request['method']=="POST":
+    try:
+      msg_str = request['form']['message']
+      sbj_str = request['form']['subject']
+      receiver = request['form']['receiver']
+      sender = request['form']['sender']
+    except Exception as e:
+      return e
+    msg = create_message(sender, receiver, sbj_str, msg_str)
+    confirmation = send_message(get_service(), sender, msg)
+    if confirmation:
+      return "Your Email has been sent"
+    else:
+      return "Unsuccessful"
+  else:
+    return "Invalid request type"
+
+
+
+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+ 2. Second server code at *"http://608dev-2.net/sandbox/sc/team28/final_project/python/EmailApp/checkUnread.py"* takes both GET and POST requests. A GET request will simply be responded with the number of unread messages the specified user has while a POST request will be responded with all the unread mails that can fit in the specified response size and also mark all return mails as read in the user's inbox. A GET request only needs the argument *user* while a POST request body has to specify the user and response size. All unread messages will e returned as JSON formatted strings so the ESP can easily parse out the information. Note that if there are more unread mails than what the response size limits that returned JSON will have *json["More"] = "Y"*. The JSON also indicates how many mails are returned to the ESP. Similar to previously discusses, this server code also call *get_service* to get a GMail API service instance before making calls to get messages. Code shown bwlow:
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def get_messages(service, user):
+    results = service.users().messages().list(userId=user, labelIds=['INBOX'], q="is:unread").execute()
+    messages = results.get('messages', [])
+    if not messages:
+        return None
+    else:
+        return messages
+
+def request_handler(request):
+    if request['method']=="POST":
+        try:
+            user_me = request['form']['user']
+            response_len = int(request['form']['size'])
+        except Exception as e:
+            return e
+    else:
+        user_me = request['values']['user']
+    service = get_service()
+    messages = get_messages(service, user_me)
+    return_dict = dict()
+    if messages == None:
+        if request['method'] == "POST":
+            return_dict['num'] = 0
+            return return_dict
+        else:
+            return "0"
+    else:
+        msg_count = len(messages)
+        if request['method'] == "GET":
+            return "{}".format(msg_count)
+        else:
+            msg_index = 1
+            return_dict['More']='N'
+            for message in messages:
+                if len(json.dumps(return_dict, indent=4)) < response_len:
+                    msg = service.users().messages().get(userId=user_me, id=message['id']).execute()
+                    service.users().messages().modify(userId=user_me, id=message['id'], body={'removeLabelIds': ['UNREAD']}).execute()
+                    headers = msg['payload']['headers']
+                    return_dict[msg_index] = dict()
+                    for header in headers:
+                        if header['name'] == 'from':
+                            return_dict[msg_index]['From'] = header['value']
+                        elif header['name'] == 'subject':
+                            return_dict[msg_index]['Subject'] = header['value']
+                    encoded = msg['payload']['body']['data']
+                    decoded = base64.urlsafe_b64decode(encoded) 
+                    return_dict[msg_index]['Message'] = decoded.decode('ascii')
+                    return_dict['num'] = msg_index
+                    msg_index += 1
+                else:
+                    return_dict['More']='Y'
+                    break
+            return json.dumps(return_dict, indent=4)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+3. The third server endpoint at "http://608dev-2.net/sandbox/sc/team28/final_project/python/EmailApp/email_login.py" also takes both GET and POST requests. A GET request will be responded with the number of accounts that are saved on the server for that specific user. A POST request is used when the user wants to log into a new account. Since all GMail API has limitations on the email accounts we can use(all emails have to be previously listes when we set up the API service on Google Workspace Platform and have to give autorizations first), we cannot log into any email accounts we want on the ESP. And we also can't directly check user's credentials with Google, we are essentially using this proxy server to check credentials against accounts and credentials we hardcoded on the server to simulate the log in process. If the account the user is trying to log in is one of our listed accounts and matches the password we put on the server, the server will save that account for user to use in the future and log the user into the email app. Otherwise, the server would respond with the appropriate error message. Code shown below:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+email_db = '/var/jail/home/team28/final_project/python/EmailApp/emailInfo.db'
+authorized_accounts = {'608team28@gmail.com':'demoaccount'}
+
+def request_handler(request):
+    if request['method']=="POST":
+        try:
+            user = request['form']['user']
+            email = request['form']['email']
+            passcode = request['form']['passcode']
+        except Exception as e:
+            return e
+        if email not in authorized_accounts.keys():
+            return "You need to give authorization with this email first"
+        else:
+            verified = False
+            with sqlite3.connect(email_db) as c:
+                c.execute("""CREATE TABLE IF NOT EXISTS acct_user(USER text, ACCT text, PASSCODE text);""")
+                account_info = c.execute("""SELECT * FROM acct_user WHERE ACCT = ?;""", (email,)).fetchone()
+                if not account_info:
+                    verified_pass = authorized_accounts[email]
+                    if verified_pass == passcode:
+                        verified = True
+                        c.execute("""INSERT INTO acct_user VALUES (?,?, ?);""",(user, email, verified_pass))
+                else:
+                    if passcode == account_info[2]:
+                        verified = True
+            if verified == True:
+                return "True"
+            else:
+                return "Please check your password"
+    else:
+        try:
+            user = request['values']['user']
+        except Exception as e:
+            return e
+        with sqlite3.connect(email_db) as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS acct_user(USER text, ACCT text, PASSCODE text);""")
+            accounts = c.execute("""SELECT (ACCT) FROM acct_user WHERE USER = ?;""", (user,)).fetchall()
+        return_dict=dict()
+        if accounts:
+            num = 0
+            for i in range(len(accounts)):
+                return_dict[i+1] = str(accounts[i][0])
+                num += 1
+                if i > 2:
+                    break
+            return_dict['num'] = num
+            return json.dumps(return_dict, indent = 4)
+        else:
+            return_dict['num'] = 0
+            return json.dumps(return_dict, indent = 4)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+ESP
+-------------------------------------------------------------------------------
+Implementation:
+
+This implementation makes use of two kind of state machines(similar to messaging app)-- we'll call them A and B. 
+
+In state machine A, the code keeps track of which screen the user is currently viewing. The states can have the following values: *LOGIN_MENU, USER_LOGIN, SEND_MAIL, and DISPLAY_MAIL*. *handle_user_input()* is the function that responds to button clicks, and thus makes state changes. For example, when a user is on the *USER_LOGIN* screen and will be prompted to input an email address and password and clicks ENTER (button_input_three = 1), *handle_user_input* calls a helper function to send a request to proxy server to check the login credentials, and, conditional on a valid email address and password, transitions to the *OPTION_MENU* state. 
+
+In state machine B, which is only used in the menu states (*LOGIN_MENU* and *OPTION_MENU*), the state tracks which item in the menu the user has currently selected. Therefore, when the user presses enter, the system knows which state from state machine A to transition to. 
+
+The flow of the program is as follows: The user first lands on the *LOGIN_MENU* screen. There, he or she is in the *LOGIN_MENU* state. They can either choose to use a previously saved email account(given there are accounts saved on the server with this associated user) or they can choose *NEW ACCOUNT* option. Upon making the choice, the user is moved to the correct state to either choose some saved credentials or input a new address. Upon hitting enter, their choice is validated and the program tranfers into the OPTION_MENU state. Snippet of this code is shown below:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+uint8_t MailApp::handle_user_input() {
+     //while in Mail app user can go back to LOGIN_MENU at any point by long press button 1
+    if(button_input_one == 2){
+        getSavedAccounts();
+        prev_selected = 0;
+        select_state = 0;
+        prev_state = mail_state;
+        mail_state = LOGIN_MENU;
+    }
+    //while in Mail app user can go back to OPTION_MENU at any point by long press button 1
+    else if(button_input_two == 2 && user_email != NULL){
+        checkUnreadNum();
+        prev_selected = 0;
+        select_state = 0;
+        prev_state = mail_state;
+        mail_state = OPTION_MENU;
+    }
+    //LOGIN_MENU gives use the option to select from a saved account on the server or log in to new email
+    else if (mail_state == LOGIN_MENU){
+        memset(user_email, 0, sizeof(user_email));
+        if(select_state == 0){
+            if(num_saved_account > 0){
+                select_state = 1;
+            }
+            else{
+                select_state = 4;
+            }
+        }
+        if(button_input_two == 1){
+            prev_selected = select_state;
+            select_state++;
+            if(num_saved_account == 0){
+                select_state = 4;
+            }
+            else if(select_state > num_saved_account){
+                if(prev_selected == 4){
+                    select_state = 1;
+                }
+                if(prev_selected == 1){
+                    select_state = 4;
+                }
+            }
+        }
+        if(button_input_three == 1){
+            if(select_state == 4){
+                prev_selected = select_state;
+                select_state = 0;
+                prev_state = LOGIN_MENU;
+                mail_state = USER_LOGIN;
+            }
+            else{
+                setUserEmail(select_state);
+                checkUnreadNum();
+                timer = millis();
+                prev_selected = select_state;
+                select_state = 0;
+                prev_state = LOGIN_MENU;
+                mail_state = OPTION_MENU;
+            }
+        }
+    }
+    //user inputs a new email account to log in 
+    else if(mail_state == USER_LOGIN){
+        if(login_failed){
+            if(button_input_three == 1){
+                prev_state = LOGIN_MENU;
+                login_failed = false;
+            }
+        }
+        else if(keyboard.handle_user_input(button_input_one, button_input_two, button_input_three)){
+            if(emailEntered == false){
+                sprintf(email_temp, "%s", keyboard.get_current_message());
+                keyboard.reset_message();
+                emailEntered = true;
+            }else{
+                sprintf(other, "%s", keyboard.get_current_message());
+                keyboard.reset_message();
+                emailEntered = false;
+                firstTime = true;
+                loginEmail(email_temp, other);
+                if(strncmp(response, "True", 4)==0){
+                    strcpy(user_email, email_temp);
+                    memset(email_temp, 0, sizeof(email_temp));
+                    checkUnreadNum();
+                    timer = millis();
+                    prev_state = USER_LOGIN;
+                    mail_state = OPTION_MENU;
+                }
+                else{
+                    login_failed = true;
+                    firstTime = true;
+                }
+            }
+        }
+    }
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+In the OPTION_MENU, the user can:
+1. Check how many unread emails they have
+2. View their emails
+3. Draft a new email
+
+Each option transfers into a separate state. If, for example, a user wants to send a new email, s/he will be transferred to the correct state. There, the program will ask them to input a recipient, a subject, and a message. Upon completion, the program verifies all fields are filled and sends a http request to the server code (discussed above) then transitions into the *DISPLAY_MAIL* state, which will either display a confirmation or *Unsuccessfull* (if Gmail API was unable to send the email). At any given point, the user can also move back to the LOGIN_MENU (to switch email accounts) by long pressing button_one. They can go to the OPTION_MENU state at any time by long pressing button_two. As always, long pressing button_three takes the user back to the Home Screen. Snippet of this code is shown below:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+else if (mail_state == OPTION_MENU){
+        if(select_state == 0){
+            if(unread_num > 0){
+                select_state = SELECT_UNREAD;
+            }
+            else{
+                select_state = SELECT_SEND;
+            }
+        }
+        if(button_input_two == 1){
+            prev_selected = select_state;
+            select_state++;
+            if(unread_num == 0){
+                select_state = SELECT_SEND;
+            }
+            else if(select_state > SELECT_SEND){
+                select_state = SELECT_UNREAD;
+            }
+        } 
+        else if (button_input_three == 1) {
+            if (select_state == SELECT_UNREAD) {
+                checkUnreadMail();
+                mail_state = DISPLAY_MAIL;
+                prev_state = OPTION_MENU;
+            } else if (select_state == SELECT_SEND) {
+                emailEntered = false;
+                subjectEntered = false;
+                messageEntered = false;
+                memset(email_temp, 0, sizeof(email_temp));
+                memset(other, 0, sizeof(other));
+                memset(message, 0, sizeof(message));
+                mail_state = SEND_MAIL;
+                prev_state = OPTION_MENU;
+            }
+        }
+        if (millis() - timer >= notif_period) {
+            checkUnreadNum();
+            timer = millis();
+        }
+    } 
+
+    else if (mail_state == SEND_MAIL) {
+        if (keyboard.handle_user_input(button_input_one, button_input_two, button_input_three)) {
+            if (emailEntered == false) {
+                sprintf(email_temp, "%s", keyboard.get_current_message());
+                keyboard.reset_message();
+                emailEntered = true;
+            } else if (subjectEntered == false) {
+                sprintf(other, "%s", keyboard.get_current_message());
+                keyboard.reset_message();
+                subjectEntered = true;
+            } else {
+                sprintf(message, "%s", keyboard.get_current_message()); 
+                keyboard.reset_message();
+                sendMail(email_temp, other, message);
+                subjectEntered = false;
+                emailEntered = false;
+                messageEntered = false;
+                memset(email_temp, 0, sizeof(email_temp));
+                memset(other, 0, sizeof(other));
+                memset(message, 0, sizeof(message));
+                firstTime = true;
+                mail_state = DISPLAY_MAIL;
+                prev_state = SEND_MAIL; 
+            }
+        }
+    } 
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When the user wants to view unread messages, they can select the option in *OPTION_MENU* which will then make the corresponding request to the server to return all unread messages(limited to response buffer size) and then transition the user to *DISPLAY_MAIL* state. In *DISPLAY_MAIL* state, the system calls *MAIL_PARSING* helper function, which is similar to the *MESSAGE_PARSING* function previously discussed in messaging app. The user will be able to scroll through unread emails one by one if there are more than one unread email. If not all of the user's unread mails can be returned in response buffer, the user will be prompted to push *DOWN(button_two)* to request another batch of unread emails from the server.
+
+Mail App Video
+------------------------------------------------------------------------------
+<iframe width="560" height="315" src="https://www.youtube.com/embed/nZipdeupqUU" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+Code Appendix
+-------------------------------------------------------------------------------
+MailApp::draw_screen() is shown below:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void MailApp::draw_screen() {
+    if(mail_state == LOGIN_MENU){
+        if (prev_state != LOGIN_MENU){
+            tft.fillScreen(TFT_BLACK);
+            prev_state = LOGIN_MENU;
+            prev_selected = 0;
+        }
+        char notification[50];
+        sprintf(notification, "%d accounts saved", num_saved_account);
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.drawString(notification, 10, 5);
+        tft.drawRect(2, 115, 122, 28, TFT_BLUE);
+        if(prev_selected != select_state && prev_selected != 0){
+            tft.fillRect(3, prev_selected*30-5, 120, 28, TFT_BLACK);
+            tft.fillRect(3, select_state*30-5, 120, 28, TFT_GREEN);
+            prev_selected = select_state;
+        }
+        else if(prev_selected == 0){
+            tft.fillRect(3, select_state*30-5, 120, 28, TFT_GREEN);
+            prev_selected = select_state;
+        }
+        tft.setTextColor(TFT_WHITE);
+        tft.drawString("NEW ACCOUNT", 32, 125);
+        if(num_saved_account > 0){
+            uint8_t yPos = 25;
+            for(uint8_t i = 1; i <= num_saved_account; i++){
+                char key[5];
+                memset(key, 0, sizeof(key));
+                itoa(i, key, 10);
+                tft.drawRect(3, yPos, 122, 28, TFT_BLUE);
+                char draw_acct[50];
+                strcpy(draw_acct, account_json[key]);
+                uint8_t txt_y = yPos + 10;
+                tft.drawString(draw_acct, 5, txt_y);
+                yPos += 30;
+            }
+        }
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    }
+    else if(mail_state == USER_LOGIN){
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        if(login_failed){
+            if(firstTime == true){
+                tft.fillScreen(TFT_BLACK);
+                tft.setTextColor(TFT_RED, TFT_BLACK);
+                tft.setCursor(3,3);
+                tft.println(response);
+                tft.setTextColor(TFT_BLUE, TFT_BLACK);
+                tft.println("Short Press ENTER to try again");
+                tft.println("Long Press RIGHT to return to Login Menu");
+                firstTime = false;
+            }
+        }
+        else{
+            if(prev_state != USER_LOGIN){
+             tft.fillScreen(TFT_BLACK);
+             prev_state = USER_LOGIN;
+            }
+            keyboard.draw_screen();
+            if(emailEntered != true){
+                //enter email acocunt
+                tft.drawRect(5, 5, 115, 40, TFT_GREEN);
+                //tft.fillRect(5, 5, 115, 40, TFT_BLACK);
+                tft.drawString("Email:", 8, 8);
+                tft.drawString(keyboard.get_current_message(), 8, 18);
+                tft.drawRect(5, 50, 115, 40, TFT_WHITE);
+                tft.drawString("Password:", 8, 53);
+            }
+            else{
+                // enter password
+                tft.drawRect(5, 5, 115, 40, TFT_WHITE);
+                tft.drawString("Email:", 8, 8);
+                tft.setTextColor(0x7BEF, TFT_BLACK);
+                tft.drawString(email_temp, 8, 18);
+                tft.drawRect(5, 50, 115, 40, TFT_GREEN);
+                //tft.fillRect(5, 50, 115, 40, TFT_BLACK);
+                tft.setTextColor(TFT_WHITE, TFT_BLACK);
+                tft.drawString("Password:", 8, 53);
+                tft.drawString(keyboard.get_current_message(), 8, 63);
+                firstTime = true;
+            }
+        }
+    }
+
+    else if (mail_state==OPTION_MENU){ 
+        if(prev_state != OPTION_MENU){
+            tft.fillScreen(TFT_BLACK);
+            prev_state = OPTION_MENU;
+        }
+        char notification[200];
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        sprintf(notification, "%d new emails", unread_num);
+        tft.drawString(notification, 20, 10);
+        tft.setTextColor(TFT_WHITE);
+        //check unread button
+        if (unread_num > 0){
+            tft.drawRect(8, 25, 114, 28, TFT_BLUE);
+            tft.setTextColor(TFT_WHITE);
+            tft.drawString("View All Unread", 20, 35);
+        } else {
+            tft.drawRect(8, 25, 114, 28, 0x7BEF);
+            tft.setTextColor(0x7BEF);
+            tft.drawString("View All Unread", 20, 35);
+            tft.setTextColor(TFT_WHITE);
+        }
+        //send message button
+        tft.drawRect(8, 55, 114, 28, TFT_BLUE);
+        if(prev_selected != select_state && prev_selected != 0){
+            tft.fillRect(8, prev_selected*30-5, 114, 28, TFT_BLACK);
+            tft.fillRect(8, select_state*30-5, 114, 28, TFT_GREEN);
+            prev_selected = select_state;
+        }
+        else if(prev_selected == 0){
+            tft.fillRect(8, select_state*30-5, 114, 28, TFT_GREEN);
+            prev_selected = select_state;
+        }
+        tft.setTextColor(TFT_WHITE);
+        tft.drawString("Send Message", 32, 65);
+    }
+
+    else if (mail_state==SEND_MAIL){
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        if(prev_state != SEND_MAIL){
+             tft.fillScreen(TFT_BLACK);
+             prev_state = SEND_MAIL;
+        }
+        keyboard.draw_screen();
+        if(emailEntered != true){
+            tft.drawRect(5, 5, 115, 25, TFT_GREEN);
+            tft.drawString("Recepient:", 10, 8);
+            tft.drawString(keyboard.get_current_message(), 10, 18);
+            tft.drawRect(5, 35, 115, 60, TFT_WHITE);
+        }
+        else if (emailEntered == true && subjectEntered != true){;
+            tft.drawRect(5, 5, 115, 25, TFT_WHITE);
+            tft.drawString("Recepient:", 10, 8);
+            tft.setTextColor(0x7BEF, TFT_BLACK);
+            tft.drawString(email_temp, 8, 18);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.drawRect(5, 35, 115, 60, TFT_GREEN);
+            tft.drawString("Subject:", 10, 37);
+            tft.drawString(keyboard.get_current_message(), 10, 54);
+        }
+        else if(emailEntered == true && subjectEntered == true && messageEntered != true && firstTime == true){
+            tft.fillScreen(TFT_BLACK);
+            firstTime = false;
+            tft.drawRect(5, 5, 115, 80, TFT_GREEN);
+            tft.drawString("Email Body:", 10, 8);
+            tft.drawString(keyboard.get_current_message(), 10, 18);
+        }
+        else{
+            tft.drawString(keyboard.get_current_message(), 10, 18);
+        }
+    } 
+    else if (mail_state==DISPLAY_MAIL){
+        if (prev_state != DISPLAY_MAIL){
+            tft.fillScreen(TFT_BLACK);
+        }
+        if (prev_state == OPTION_MENU){
+            mail_parsing(email_json, 1);
+        }
+        else if (prev_state == SEND_MAIL){
+            tft.setCursor(5, 5);
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+            tft.println(response);
+            tft.setTextColor(TFT_BLUE);
+            tft.setCursor(5, 30);
+            tft.println("Short Press ENTER to go back");
+            tft.println("Long Press RIGHT to go to Login Menu");
+            tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        }
+        if (msg_display_updated != true){
+            mail_parsing(email_json, msg_index);
+            msg_display_updated = true;
+        }
+        prev_state = DISPLAY_MAIL;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Weather App
+================================================================================
+Specifications:
+1. User can readily select their top 5 favorite locations
+2. Error Detection
+
+
+
+Server 
+-------------------------------------------------------------------------------
+On the server, we uploaded two Python scripts which created the databases for the users and the weather they searched. This was done so that we could get the locations that they had searched for the most and use that for the favorites screen. We also had a proxy server that called a get request to the OperWeather API. We did the get request here so that we could parse the information easily with Python syntax as well as account for the error detection.
+
+ESP
+-------------------------------------------------------------------------------
+Implemenetation 1:
+- We were able to implement the top 5 favorite locations by creating a database that tracks the amount of times each user has searched for each city 
+- Every time a user requests weather data, we perform a POST Request to our server, which inputs into the database an entry specifying the user performing the search, the location that was searched for, and the amount of times this location has been searched for. 
+- We created a new state, known as FAVORITES, which displays the necessary information in the draw_screen function. A user can choose to enter the favorites page from the home screen. Upon entering the favorites screen then, a GET request is performed to the server that acquires the 5 locations that the current user has searched for the most, and prints them on the screen to easily navigate. The user input will toggle between different options and choosing one of them will retrieve the necessary weather information.
+
+Implementation 2:
+
+- We implemented our error detection by moving our GET request onto the server so that in the case where an invalid city is input, we can return “ERROR”. 
+- We then check for this return value in our getWeather() function, in which case we transition into our ERROR state. 
+- In our ERROR state, we simply tell the user that they input an invalid city, and prompt them to press any button to return to the home screen.
+
+Weather App Video
+------------------------------------------------------------------------------
+<iframe width="560" height="315" src="https://www.youtube.com/embed/A-XEAT-VtaI" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+Code Appendix
+-------------------------------------------------------------------------------
+ESP Code:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+else if (weather_state == FAVORITES){
+        if (button_input_one > 0){
+            weather_state = SELECT_MENU;
+            prev_state = FAVORITES;
+        }
+        
+        if (button_input_two > 0){
+            location_state++;
+            location_state %= 5;
+            
+        }
+        if (button_input_three == 1){
+            if (location_state == 0){
+                Serial.println(fave1);
+                getWeather(fave1);
+                sprintf(city, fave1);
+                weather_state = DISPLAY_INFO;
+                prev_state = FAVORITES;
+            }else if (location_state == 1){
+                getWeather(fave2);
+                sprintf(city, fave2);
+                
+                weather_state = DISPLAY_INFO;
+                prev_state = FAVORITES;
+            }else if (location_state == 2){
+                getWeather(fave3);
+                sprintf(city, fave3);
+                weather_state = DISPLAY_INFO;
+                prev_state = FAVORITES;
+            }else if (location_state == 3){
+                getWeather(fave4);
+                sprintf(city, fave4);
+                weather_state = DISPLAY_INFO;
+                prev_state = FAVORITES;
+            }else if (location_state == 4){
+                getWeather(fave5);
+                sprintf(city, fave5);
+                weather_state = DISPLAY_INFO;
+                prev_state = FAVORITES;
+            }
+            
+        }
+    }
+    else if(weather_state == ERROR){
+        Serial.println("we are in the error state");
+        if((button_input_one> 0) || (button_input_two > 0) || (button_input_three ==  1)){
+            weather_state = SELECT_MENU;
+            prev_state = ERROR;
+        }
+    }
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+New getWeather
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void WeatherApp::getWeather(char* input){
+   
+    char query[300];
+    if (strlen(input) == 0){
+        input = "Boston";
+    }
+    sprintf(query, "city=%s", input);
+    http_request("GET",
+        query,
+        "/sandbox/sc/team28/final_project/python/WeatherApp/OpenWeather.py",
+        "608dev-2.net");
+    char comparison[] = "ERROR";
+    const char delimiter[] = "&";
+    if (strstr(response, comparison) != NULL){
+        Serial.println("in the new if");
+        weather_state = ERROR;
+    }
+    else{
+        Serial.println("in the new else");
+        char *pch = strtok(response, delimiter);
+        pch = strtok(NULL, delimiter);
+        sprintf(temperature,"%s", pch);
+        pch = strtok(NULL, delimiter);
+        sprintf(humidity, "%s %%", pch);
+        pch = strtok(NULL, delimiter);
+        sprintf(weather, "%s", pch);
+        char post_query[300];
+        sprintf(post_query, "user=%s&location=%s&count=1", username, input);
+        http_request("POST", post_query, "/sandbox/sc/team28/final_project/python/WeatherApp/WeatherApp.py", "608dev-2.net");
+        
+    }
+    
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
+
+Clock App
+================================================================================
+Specifications:
+1. The user should be able to see their local time
+2. The user should be able to see a chosen location's time (World Clock)
+
+Server 
+-------------------------------------------------------------------------------
+There is no server side.
+
+ESP
+-------------------------------------------------------------------------------
+To get local time, the ESP uses the lat and lon variables defined in the login screen to determine the user's location. It then sends a get request to the api containing that location in the location field and prints out the results. 
+
+To get the time at the user's preferred city, the ESP uses the keyboard functionality. When the user inputs the city name and presses enter, the code adds that city to the query and sends another get request. 
+
+Code Appendix
+-------------------------------------------------------------------------------
+
+https://www.youtube.com/watch?v=pToG-XN9MnM
+
+Login App
+================================================================================
+Specifications:
+
+Add a login screen that is the first view on the phone. The user:
+    - enters their WiFi network and password so the credentials no longer have to be hardcoded
+    - logins into the phone with their username and password OR
+    - creates new user on the phone with a username and password
+
+The purpose of the login screen is to add a layer of protection to a user's data (texts, emails, etc), and also so we can know who is currently using the device for the purpose of texting, emailing, kepping track of game high score, etc.
+
+Server 
+-------------------------------------------------------------------------------
+
+ESP
+-------------------------------------------------------------------------------
+Implementation:
+- State machine to know which screen to display: enter WiFi credentials screen, choose to login or create new user screen, login screen, and create new user screen.
+- Enter WiFi credentials screen has two textboxes labeled "network:" and "password:", respectively. There is also a butten labeled "submit". The user can scroll between these three objects. If they click on either of the textboxes it opens up the keyboard and allows them to type in the box. If they click the button it submits the WiFi credentials and attempts to connect to the network. If it fails it displays a message "incorrect"; otherwise it switches to the choose to login or create new user screen.
+- Choose to login or create new user screen has two buttons labeled "login" and "new user". Clicking the first button takes the user to the login screen. The second button takes the user to the new user screen.
+- Login screen has two textboxes labeled "username:" and "password:", operating the same as in the WiFi screen. There is also a button labeled "submit" that when clicked sends the text currently entered into the textbox to the server with a HTTP POST request to check if the username and password are correct. If so it takes them to the home screen of the phone; otherwise it displays a message saying it's incorrect. There is also a button labeled "back", which takes the user back to the choose to login or new user screen.
+- New user screen is the exact same as the login screen except it sends its POST request to a different endpoint to create a user rather than check if it already exists.
+- The username entered on the login or new user screen is stored as a static variable in the App parent class.
+
+Code Appendix
+-------------------------------------------------------------------------------
+ESP Code:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+LoginApp::LoginApp() {
+    screen_state = 0;  
+    vertical_select_state = 0;
+    horizontal_select_state = 0;
+    state_change = true;
+    show_keyboard = false;
+    incorrect_input = false;
+    loading = false;
+    sprintf(text_box_one, "");
+    sprintf(text_box_two, "");
+    keyboard.reset_message();
+}
+
+bool LoginApp::connect_to_internet() {
+    int n = WiFi.scanNetworks();
+    Serial.println("scan done");
+    if (n == 0) {
+        Serial.println("no networks found");
+    } else {
+        // connect to the Internet
+        Serial.print(n);
+        Serial.println(" networks found");
+        for (int i = 0; i < n; ++i) {
+            Serial.printf("%d: %s, Ch:%d (%ddBm) %s ", i + 1, WiFi.SSID(i).c_str(), WiFi.channel(i), WiFi.RSSI(i), WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "open" : "");
+            uint8_t* cc = WiFi.BSSID(i);
+            for (int k = 0; k < 6; k++) {
+                Serial.print(*cc, HEX);
+                if (k != 5) Serial.print(":");
+                cc++;
+            }
+            Serial.println("");
+        }
+    }
+    delay(100); // wait a bit (100 ms)
+
+    // if using regular connection use line below:
+    WiFi.begin(text_box_one, text_box_two);
+    // if using channel/mac specification for crowded bands use the following:
+    // WiFi.begin(network, password, channel, bssid);
+    uint8_t count = 0; //count used for Wifi check times
+    Serial.print("Attempting to connect to ");
+    Serial.println(text_box_one);
+    while (WiFi.status() != WL_CONNECTED && count<6) {
+        delay(500);
+        Serial.print(".");
+        count++;
+    }
+    delay(2000);
+    if (WiFi.isConnected()) { // if we connected then print our IP, Mac, and SSID we're on
+        Serial.println("CONNECTED!");
+        Serial.printf("%d:%d:%d:%d (%s) (%s)\n",WiFi.localIP()[3],WiFi.localIP()[2],
+                                                WiFi.localIP()[1],WiFi.localIP()[0], 
+                                                WiFi.macAddress().c_str() ,WiFi.SSID().c_str());
+        delay(500);
+        return true;
+    } else { // if we failed to connect just Try again.
+        Serial.println("Failed to Connect :/");
+        Serial.println(WiFi.status());
+        return false;
+    }
+}
+
+uint8_t LoginApp::handle_user_input() {
+    if (!loading) {
+        if (!show_keyboard) {
+            if (screen_state == 1) {
+                if (button_input_two == 1 || button_input_two == 2) {
+                    // vertical scroll
+                    if (vertical_select_state < 1) {
+                        vertical_select_state++;
+                    } else {
+                        vertical_select_state = 0;
+                    }
+                    state_change = true;
+                }
+                if (button_input_three == 1) {
+                    // click the login or new user button
+                    if (vertical_select_state == 0) {
+                        // switch to user login
+                        screen_state = 2;
+                    } else {
+                        // switch to new user
+                        screen_state = 3;
+                    }
+                    state_change = true;
+                    vertical_select_state = 0;
+                }
+            } else {
+                if (button_input_two == 1 || button_input_two == 2) {
+                    // vertical scroll
+                    if (vertical_select_state < 2) {
+                        vertical_select_state++;
+                    } else {
+                        vertical_select_state = 0;
+                    }
+                    state_change = true;
+                }
+                if ((screen_state == 2 || screen_state == 3) && vertical_select_state == 2) {
+                    if (button_input_one == 1 || button_input_one == 2) {
+                        // horizontal scroll
+                        if (horizontal_select_state < 1) {
+                            horizontal_select_state++;
+                        } else {
+                            horizontal_select_state = 0;
+                        }
+                        state_change = true;
+                    }
+                }
+                if (button_input_three == 1) {
+                    if (vertical_select_state == 0 || vertical_select_state == 1) {
+                        // enter text into box
+                        show_keyboard = true;
+                    } else {
+                        // submit info
+                        if (screen_state == 2 || screen_state == 3) {
+                            if (horizontal_select_state == 0) {
+                                // go back to select login or new user
+                                screen_state = 1;
+                                sprintf(text_box_one, "");
+                                sprintf(text_box_two, "");
+                                vertical_select_state = 0;
+                                horizontal_select_state = 0;
+                                incorrect_input = false;
+                            } else {
+                                // send http post request with credentials
+                                char body[55];
+                                sprintf(body, "username=%s&passcode=%s", text_box_one, text_box_two);
+                                char destination[85];
+                                if (screen_state == 2) {
+                                    sprintf(destination, "http://608dev-2.net/sandbox/sc/team28/final_project/python/Login/login.py");
+                                } else {
+                                    sprintf(destination, "http://608dev-2.net/sandbox/sc/team28/final_project/python/Login/create_user.py");
+                                }
+                                http_request("POST", body, destination, "608dev-2.net");
+                                loading = true;
+                            }
+                        } else {
+                            // connect to the internet
+                            if (connect_to_internet()) {
+                                screen_state = 1;
+                                sprintf(text_box_one, "");
+                                sprintf(text_box_two, "");
+                                vertical_select_state = 0;
+                                incorrect_input = false;
+                                get_current_location();
+                                loading = true;
+                            } else {
+                                incorrect_input = true;
+                            }
+                        }
+                    }
+                    state_change = true;
+                }
+            }
+        } else {
+            if (button_input_one != 0 || button_input_two != 0 || button_input_three != 0) {
+                state_change = true;
+            }
+            bool keyboard_enter = keyboard.handle_user_input(button_input_one, button_input_two, button_input_three);
+            if (vertical_select_state == 0) {
+                strncpy(text_box_one, keyboard.get_current_message(), 18);
+            } else {
+                strncpy(text_box_two, keyboard.get_current_message(), 18);
+            }
+            if (keyboard_enter) {
+                keyboard.reset_message();
+                show_keyboard = false;
+            }
+        }
+    } else {
+        if (!request_sending) {
+            state_change = true;
+            loading = false;
+            if (screen_state > 1) {
+                if (strncmp(response, "True", 4) == 0) {
+                    // login or creation of new user was successful
+                    // store username
+                    strcpy(username, text_box_one);
+                    // switch to home screen
+                    return HOME;
+                } else {
+                    // login or creation of new user was NOT successful
+                    incorrect_input = true;
+                }
+            } else {
+                deserialize_location_json();
+            }
+        }
+    }
+    return NO_CHANGE;
+}
+
+void LoginApp::draw_screen() {
+    if (state_change) {
+        tft.fillScreen(TFT_HOME_SCREEN);
+        if (!loading) {
+            if (screen_state == 1) {
+                // select login or new user
+                tft.setTextSize(2);
+                if (vertical_select_state == 0) {
+                    tft.fillRect(12, 44, 104, 24, TFT_WHITE);
+                    tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+                    tft.drawString("login", 12+22, 44+4);
+
+                    tft.fillRect(12, 92, 104, 24, TFT_BLACK);
+                    tft.setTextColor(TFT_WHITE, TFT_BLACK); // set color of font to white foreground, black background
+                    tft.drawString("new user", 12+4, 92+4);
+                } else {
+                    tft.fillRect(12, 44, 104, 24, TFT_BLACK);
+                    tft.setTextColor(TFT_WHITE, TFT_BLACK); // set color of font to white foreground, black background
+                    tft.drawString("login", 12+22, 44+4);
+
+                    tft.fillRect(12, 92, 104, 24, TFT_WHITE);
+                    tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+                    tft.drawString("new user", 12+4, 92+4);
+                }
+            } else {
+                tft.setTextSize(1);
+
+                tft.setTextColor(TFT_WHITE, TFT_HOME_SCREEN); // set color of font to white foreground, blue background
+                if (screen_state == 2 || screen_state == 3) {
+                    // enter username and password
+                    tft.drawString("username:", 8, 9);
+                    tft.setTextColor(TFT_RED, TFT_HOME_SCREEN); // set color of font to red foreground, blue background
+                    if (incorrect_input) {
+                        tft.drawString("incorrect", 68, 9);
+                    }
+                } else {
+                    // select WiFi network and enter password
+                    tft.drawString("network:", 8, 9);
+                    tft.setTextColor(TFT_RED, TFT_HOME_SCREEN); // set color of font to red foreground, blue background
+                    if (incorrect_input) {
+                        tft.drawString("incorrect", 68, 9);
+                    }
+                }
+                tft.fillRect(8, 24, 112, 12, TFT_WHITE);
+                tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+                tft.drawString(text_box_one, 10, 26);
+
+                tft.setTextColor(TFT_WHITE, TFT_HOME_SCREEN); // set color of font to white foreground, blue background
+                tft.drawString("password:", 8, 45);
+                tft.setTextColor(TFT_RED, TFT_HOME_SCREEN); // set color of font to red foreground, blue background
+                if (incorrect_input) {
+                    tft.drawString("incorrect", 68, 45);
+                }
+                tft.fillRect(8, 60, 112, 12, TFT_WHITE);
+                tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+                tft.drawString(text_box_two, 10, 62);
+
+                if (screen_state == 2 || screen_state == 3) {
+                    tft.fillRect(16, 81, 40, 12, TFT_WHITE);
+                    tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+                    tft.drawString("back", 16+8, 81+2);
+
+                    tft.fillRect(72, 81, 40, 12, TFT_WHITE);
+                    tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+                    tft.drawString("submit", 72+2, 81+2);
+                } else {
+                    tft.fillRect(42, 81, 44, 12, TFT_WHITE);
+                    tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+                    tft.drawString("submit", 42+4, 81+2);
+                }
+                if (vertical_select_state == 0) {
+                    tft.drawRect(7, 23, 114, 14, TFT_BLACK);
+                } else if (vertical_select_state == 1) {
+                    tft.drawRect(7, 59, 114, 14, TFT_BLACK);
+                } else {
+                    if (screen_state == 2 || screen_state == 3) {
+                        if (horizontal_select_state == 0) {
+                            tft.drawRect(15, 80, 42, 14, TFT_BLACK);
+                        } else {
+                            tft.drawRect(71, 80, 42, 14, TFT_BLACK);
+                        }
+                    } else {
+                        tft.drawRect(41, 80, 46, 14, TFT_BLACK);
+                    }
+                }
+                if (show_keyboard) {
+                    keyboard.draw_screen();
+                }
+            }
+        }
+        state_change = false;
+    } else {
+        if (loading) {
+            loading_animation.draw_screen();
+        }
+    }
+}
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+See Phone Framework video.
+
+Phone Framework
+================================================================================
+Specifications:
+	- Fix memory issues by not deleting app instances.
+	- Switch HTTP requests to being on the second core.
+	- Unlock the PSRAM.
+	- Calculate the user's location and store in the App parent class
+
+Server 
+-------------------------------------------------------------------------------
+
+None.
+
+ESP
+-------------------------------------------------------------------------------
+Implementation:
+	- App instances are no longer deleted when navigating between apps. Reset screen function was added to all subclasses of App, which wipes the screen by running tft.fillScreen with the background color of the current app. This function is called everytime switching between apps. The default parent class version of the function uses TFT_BLACK, however, the function is virtual so subclasses can override it.
+	- Every time the http_request function is called a task is created and pinned to core 0. At the start of each task a static variable ***request_sending*** in the App parent class is set to true to indicate to the subclasses of App that a request is in process. At the end of the task the variable is set back to false. This variable is useful since http requests are no longer blocking, apps need to know what to do while waiting for a response (continue normally, display a loading screen, etc).
+	- WiFi localization and Google's API is utilized at startup during the login screen to determine the user's current location and then store it in static variables in the App parent class.
+
+Code Appendix
+-------------------------------------------------------------------------------
+Addition of reset_screen function in App parent class:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void App::reset_screen() {
+	tft.fillScreen(TFT_BLACK);
+  }
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Changes to HTTP requests in App parent class:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void App::http_request(char* type, char* body, char* destination, char* http_host, bool secure, bool json) {
+	// the host, destination, type, body, will be determined by the different app that needs to send a request
+	// format the request
+	int offset = 0;
+	if (strcmp(type, "GET") == 0) {
+	  if (strlen(body) > 0) {
+		offset += sprintf(request + offset, "GET %s?%s HTTP/1.1\r\n", destination, body);
+	  } else {
+		offset += sprintf(request + offset, "GET %s HTTP/1.1\r\n", destination);
+	  }
+	  offset += sprintf(request + offset, "Host: %s\r\n", http_host);
+	  offset += sprintf(request + offset, "\r\n");
+	} else if (strcmp(type, "POST") == 0) {
+	  offset += sprintf(request + offset, "POST %s HTTP/1.1\r\n", destination);
+	  offset += sprintf(request + offset, "Host: %s\r\n", http_host);
+	  if (json) {
+		offset += sprintf(request + offset, "Content-Type: application/json\r\n");
+	  } else {
+		offset += sprintf(request + offset, "Content-Type: application/x-www-form-urlencoded\r\n");
+	  }
+	  offset += sprintf(request + offset, "Content-Length: %d\r\n\r\n", strlen(body));
+	  offset += sprintf(request + offset, "%s\r\n", body);
+	}
+	
+	Serial.println("request formatted");
+  
+	// copy the host string since it will go out of scope
+	strcpy(host, http_host);
+  
+	TaskHandle_t HttpTask;
+  
+	request_sending = true;
+	Serial.println("starting to create task");
+	if (secure) {
+	  xTaskCreatePinnedToCore(
+		send_https_request,
+		"HttpsTask", 
+		10000,
+		NULL,
+		0,
+		&HttpTask,
+		0
+	  );
+	} else {
+	  xTaskCreatePinnedToCore(
+		send_http_request,
+		"HttpTask", 
+		10000,
+		NULL,
+		0,
+		&HttpTask,
+		0
+	  );
+	}
+	Serial.println("task created");
+  }
+  
+  uint8_t App::char_append(char* buff, char c, uint16_t buff_size) {
+	int len = strlen(buff);
+	if (len > buff_size) return false;
+	buff[len] = c;
+	buff[len + 1] = '\0';
+	return true;
+  }
+  
+  void App::send_http_request(void *pvParameters) {
+	Serial.println("trying to send request");
+	// send the request
+	WiFiClient client; // WiFiClient object
+	if (client.connect(host, 80)) { // try to connect to host on port 80
+	  if (serial) Serial.println(request); // Can do one-line if statements in C without curly braces
+	  client.print(request);
+	  memset(response, 0, response_size); // Null out (0 is the value of the null terminator '\0') entire buffer
+	  uint32_t count = millis();
+	  while (client.connected()) { // while we remain connected read out data coming back
+		client.readBytesUntil('\n',response,response_size);
+		if (serial) Serial.println(response);
+		if (strcmp(response,"\r")==0) { // found a blank line!
+		  break;
+		}
+		memset(response, 0, response_size);
+		if (millis()-count>response_timeout) break;
+	  }
+	  memset(response, 0, response_size); 
+	  count = millis();
+	  while (client.available()) { // read out remaining text (body of response)
+		char_append(response, client.read(), response_size);
+	  }
+	  if (serial) Serial.println(response);
+	  client.stop();
+	  if (serial) Serial.println("-----------");  
+	} else {
+	  if (serial) Serial.println("connection failed :/");
+	  if (serial) Serial.println("wait 0.5 sec...");
+	  client.stop();
+	}
+  
+	request_sending = false;
+	vTaskDelete(NULL);
+  }
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Addition of get_current_location function in App parent class:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void App::get_current_location() {
+	int n = WiFi.scanNetworks();
+	Serial.println("scan done");
+	if (n == 0) {
+	  Serial.println("no networks found");
+	} else {
+	  // create json object containing all wifi networks for the Google Geolocation API
+	  char json_body[3000];
+	  generate_wifi_json(n, json_body);
+	  char destination[100];
+	  sprintf(destination, "https://www.googleapis.com/geolocation/v1/geolocate?key=%s", GOOGLE_API_KEY);
+	  http_request(
+		"POST", 
+		json_body,
+		destination,
+		"googleapis.com",
+		true,
+		true
+	  );
+	}
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/xVZdbDL6qmk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+<iframe width="560" height="315" src="https://www.youtube.com/embed/gOR2fx3d-XY" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+Game App
+================================================================================
+Specifications:
+
+1. User first enters a home screen, from which they can access the leaderboard or play the game
+2. The leaderboard displays the highest scores achieved by anyone who has played the game and the user who avhieved it
+2. Upon losing the game, thescreen continue to show the user's high score, not the overall high score
+
+
+Server 
+-------------------------------------------------------------------------------
+In this iteration, the server code was edited to include the user's name as a field in the database. Now our database has 3 fields: user, score, and timestamp. 
+
+When the code makes a post request, it includes username and score in the body of the request. The server code then inserts that data into the database. Next, the server fetches all the scores associated with that user and looks for the highest score among them. If the score passed in is equal to the highest score, it returns the string "You beat your highest score". Otherwise, it returns the string "Your highest score was ", followed by the highest score.
+
+When the code makes a get request, it includes a field called place in the body of the request. Place takes in a numerical value, either 1, 2, or 3, which denotes whether the code wants to know the highest performing user and score, the second highest performing user and score, or the third highest performing user and score. The server then sorts the database by score and fetches the entry associated with the highest score. Then, it sorts the database again, conditioned on the statement that user is not the highest performing user, and fetches the entry associated with the new highest performing score. This is the second place  entry. Then it does so again for the third place. The server uses the number passed in in the place field to decide which pair to return.
+
+ESP
+-------------------------------------------------------------------------------
+The ESP makes use of a state machine with three states: one for the home screen, one for the leaderboard, and one for the actual game. The user starts in the home screen and clicks on either button_one or button_two to transfer to the leaderboard or the game.
+
+In the leaderboard state, the code makes three calls to the server, one for the first place user, one for the second place user, and one for the third place user. It then prints out each of those user/score pairs in order. 
+
+In the game state, everything works the same as before, but now, when the code makes a post request to the server, it also includes a field for the username. 
+
+Code Appendix
+-------------------------------------------------------------------------------
+
+Server Code:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+import requests
+import datetime
+import sqlite3
+
+db = '/var/jail/home/team28/final_project/python/GamesApp/scoredatabase.db'
+
+def request_handler(request):
+
+	if request["method"] == "POST":
+		best_score = 0
+		
+		conn = sqlite3.connect(db)  # connect to that database (will create if it doesn't already exist)
+		c = conn.cursor()  # move cursor into database (allows us to execute commands)
+		outs = ""
+		c.execute('''CREATE TABLE IF NOT EXISTS score_table (user text, score real, timing timestamp);''') # run a CREATE TABLE command
+		
+		if 'score' not in request['form']:
+			return "missing a value"
+		
+		try:
+			score = int(request['form']['score'])
+			user = request['form']['user']
+			
+		except ValueError:
+			# return e here or use your own custom return message for error catch
+			#be careful just copy-pasting the try except as it stands since it will catch *all* Exceptions not just ones related to number conversion.
+			return "Error: score is not a number"
+
+		c.execute('''INSERT into score_table VALUES (?,?,?);''', (user, score, datetime.datetime.now()))
+		
+		things = c.execute('''SELECT score FROM score_table WHERE user = ?;''',(user,)).fetchall()
+		
+		for i in range(len(things)):
+			if things[i][0] > best_score:
+				best_score = things[i][0]
+				
+		conn.commit() # commit commands
+		conn.close() # close connection to database
+		
+		if score == best_score:
+			return "You beat your high score!"
+		else:
+			return "Your high score was {}".format(best_score)
+		
+	elif request['method'] == "GET":
+		conn = sqlite3.connect(db)  # connect to that database (will create if it doesn't already exist)
+		c = conn.cursor()  # move cursor into database (allows us to execute commands)
+		outs = ""
+		c.execute('''CREATE TABLE IF NOT EXISTS score_table (user text, score real, timing timestamp);''') # run a CREATE TABLE command
+		things = c.execute('''SELECT * FROM score_table ORDER BY score DESC;''').fetchone()
+		second = c.execute('''SELECT * FROM score_table WHERE user != ? ORDER BY score DESC;''',(things[0],)).fetchone()
+		third = c.execute('''SELECT * FROM score_table WHERE user != ? AND user != ? ORDER BY score DESC;''',(things[0], second[0])).fetchone()
+		scores_and_users = {1: str(things[0]) + ": " + str(things[1]), 2: str(second[0]) + ": " + str(second[1]), 3: str(third[0]) + ": " + str(third[1])}
+		
+
+		conn.commit() # commit commands
+		conn.close() # close connection to database
+
+		try:
+			place = int(request['values']['place'])
+			
+		except ValueError:
+			# return e here or use your own custom return message for error catch
+			#be careful just copy-pasting the try except as it stands since it will catch *all* Exceptions not just ones related to number conversion.
+			return "Error: place is not a number"
+
+		return scores_and_users[place]
+
+
+	else:
+		return 'request not supported. You need to change that.'
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+Video: <iframe width="560" height="315" src="https://www.youtube.com/embed/ZKIua0VKXFk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+
+<!-- Markdeep: --><style class="fallback">body{visibility:hidden;white-space:pre;font-family:monospace}</style><script src="markdeep.min.js" charset="utf-8"></script><script src="https://morgan3d.github.io/markdeep/latest/markdeep.min.js?" charset="utf-8"></script><script>window.alreadyProcessedMarkdeep||(document.body.style.visibility="visible")</script>

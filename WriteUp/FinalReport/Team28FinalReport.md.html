@@ -1,0 +1,662 @@
+<meta charset="utf-8" emacsmode="-*- markdown -*-"><link rel="stylesheet" href="https://casual-effects.com/markdeep/latest/slate.css?">
+                                  **The Phone™**
+                          6.08 Final Project Team 28
+  John Rao, Kameron Dawson, Camila Miranda-Llovera, Umang Bansal, Nick Dyette
+
+![The Phone™](./Images/ThePhone.jpg width="400px")
+
+What Does The Phone™ Do
+===============================================================================
+Brief overview of this phone's functionalities.
+
+Login
+-------------------------------------------------------------------------------
+The user enters their WiFi network and password to connect to the Internet, then enters their username and password to login into the phone. They have the ability to save their WiFi and user credentials, so next time they can connect and login by just clicking yes.
+
+Home Screen
+-------------------------------------------------------------------------------
+The home screen displays the icons of all the available apps on the phone. The user can navigate the apps using buttons 1 and 2 (the currently selected app is highlighted). They can enter an app using button 3 and they can navigate back to the home screen with a long press on button 3.
+
+Messaging App
+-------------------------------------------------------------------------------
+The user can send messages to other users of The Phone™ using their username. Users can also view unread messages or message history with a specific user.
+
+Email App
+-------------------------------------------------------------------------------
+The user can sign into pre-authorized Gmail accounts (up to 3 accounts). Users can then send new Emails to any Email addresses or to view unread Emails if they have any.
+
+Clock App
+-------------------------------------------------------------------------------
+The user can view their local time, as well as search up the local time in any city in the world. Additionally, they can favorite up to five cities for easy viewing.
+
+Weather App
+-------------------------------------------------------------------------------
+The user is able to get the weather information at their current location, or at any location of their own input. Additionally, the app stores the user’s top 5 most looked up locations, so that they can be readily accessed. 
+
+Game App
+-------------------------------------------------------------------------------
+The user can enter and play a game similar to flappy bird. Using the the buttons, they can jump over obstacles until they crash into one and the game is over. They can then see their score for that round and can go to the leaderboard , which shows the three highest scoring users in the system. The user also has the option to choose between difficulty levels for the game they play.
+
+Music App
+-------------------------------------------------------------------------------
+Within the music application, the user is able to select one of a maximum of 10 tracks stored in their SD card, and then play it through the MP3 module. 
+
+Notifications
+-------------------------------------------------------------------------------
+When the user gets new messages or new emails, the phone pushes a banner notification to the top of the screen (regardless of the app the user is currently using). The notification will stay on the screen for 3 seconds unless the user closes it by pressing button 3.
+
+Video Demo
+===============================================================================
+<iframe width="560" height="315" src="https://www.youtube.com/embed/QGlKSLBYdpU" title="The Phone™ Final Demo Video" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+Parts & Circuit Schematics
+===============================================================================
+Parts
+-------------------------------------------------------------------------------
+1. ESP32 DevKit
+2. ST7735 LCD Display
+3. Speaker & DFPlayer Mini MP3 Player
+4. 3 Buttons
+
+Circuit Schematics
+------------------------------------------------------------------------------- 
+![Circuit Schematics of The Phone™](./Images/circuit_schematic.jpg)
+
+System Design & Implementation
+===============================================================================
+
+Framework Design
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. Memory allocation, user input, outputting to screen, http requests, and other generic methods are standardized and contained in a generic App class to prevent repeated code.
+2. The structure of all apps is the same to make development and integration easier.
+3. State machine to handle switching between apps based on user input.
+
+### Diagrams:
+![Diagram for Framework Design](./Images/phoneFsm.jpg width="850px")
+
+### Implementation Details:
+The App class contains five utility methods: get_current_location, http_request, get_user_input, handle_user_input, and draw_screen. The first three methods are the same for all subclasses of App and the other two are meant to be overwritten by subclasses of App.
+
+- get_current_location: protected method that apps can call to get the phone's current location (utilizes Google's WiFi localization API)
+- http_request: protected method that apps can call to send http requests in parallel on the ESP32's second core so it does not block the app's operation
+- get_user_input: public method that handles getting and storing the button input values in the App parent class for the apps to access
+- handle_user_input: public method that is where apps change their internal state based on the button input values
+- draw_screen: public method that is where apps output to the LCD screen
+
+Phone class contains the phone state machine and each app, which are instances of subclasses of the parent App class. In the main Arduino file an instance of the Phone class is created in the setup function, then in the loop function it calls Phone's loop function. In Phone's loop function in the following order: 
+
+- calls get_user_input to get the button values
+- calls handle_user_input for the current app
+- calls the NotificationApp's check_notifications function to see if there are any notifications from MessagingApp or MailApp
+- calls draw_screen for the current app
+
+The handle_user_input function returns different integer values depending on the Phone state:
+
+- LoginApp: returns HOME if the user succesfully connects to the internet and logins into an account; otherwise returns NO_CHANGE
+- HomeApp: returns the app state for the app icon selected by the user; otherwise returns NO_CHANGE
+- NotificationsApp: returns REMOVE_NOTIFICATION if the user selects dismiss on the displayed notification or 3 seconds have elapsed since the notification was first displayed; otherwise returns NO_CHANGE
+- All other apps: returns HOME if button 3 is long pressed; otherwise returns NO_CHANGE
+
+If REMOVE_NOTIFICATION is returned then the phone wipes the notification from the screen and switches back to the previous app state. If any app state is returned the phone wipes the screen and transisitions to that app state. If NO_CHANGE is returned then the phone remains in the current app state. The default state for the phone is LOGIN. The phone transitions to NOTIFICATIONS state when check_notifications returns true.
+
+Login
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. The user enters their WiFi network and password to connect to the Internet, then enters their username and password to login into the phone.
+2. The user has the ability to create a new user on the phone with a username and password.
+3. The user has the ability to save their WiFi and user credentials, so next time they can connect and login by just clicking yes.
+
+The purpose of the login screen is to add a layer of protection to a user's data (texts, emails, etc), and also so we can know who is currently using the device for the purpose of texting, emailing, keeping track of game high score, etc.
+
+### Implementation Details (ESP):
+State machine to know which screen to display: enter WiFi credentials screen, choose to login or create new user screen, login screen, create new user screen, ask to connect to saved network screen, ask to login as saved user screen, ask to save network screen, and ask to save user screen.
+
+- Enter WiFi credentials screen has two textboxes labeled "network:" and "password:", respectively. There is also a butten labeled "submit". The user can scroll between these three objects. If they click on either of the textboxes it opens up the keyboard and allows them to type in the box. If they click the button it submits the WiFi credentials and attempts to connect to the network. If it fails it displays a message "incorrect"; otherwise it switches to the choose to login or create new user screen.
+- Choose to login or create new user screen has two buttons labeled "login" and "new user". Clicking the first button takes the user to the login screen. The second button takes the user to the new user screen.
+- Login screen has two textboxes labeled "username:" and "password:", operating the same as in the WiFi screen. There is also a button labeled "submit" that when clicked sends the text currently entered into the textbox to the server with a HTTP POST request to check if the username and password are correct. If so it takes them to the home screen of the phone; otherwise it displays a message saying it's incorrect. There is also a button labeled "back", which takes the user back to the choose to login or new user screen.
+- New user screen is the exact same as the login screen except it sends its POST request to a different endpoint to create a user rather than check if it already exists.
+- Ask to connect to saved network screen/ask to login as saved user screen display a message to the user asking if they want to connect to the saved network or login as the saved user, respectively. The states display two buttons: "no" and "yes". If the user selects "no" it takes them to the normal network connect or login screen. If the user selects "yes" then it connects to the internet or logins.
+- Ask to save network screen/ask to save user screen display a message to the user asking if they want to save the entered network or user, respectively. The states display two buttons: "no" and "yes". If the user selects "no" it proceeds as normal. If the user selects "yes" then it saves the network or user credentials to flash memory.
+
+The username entered on the login or new user screen is stored as a static variable in the App parent class.
+
+On the login screen if no network has been saved then users enter their network and password like usual, and then it prompts them if they want to save this network and password. If a network has already been saved then it just asks the user if they want to connect to this network. The same logic is used for the user credentials.
+
+The class utilizes the EEPROM library to write to and read from the flash memory on the ESP32 to save the WiFi and user credentials. Code snippet demonstrating how network and user credentials are written to and read as 19 character long strings from flash memory:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void LoginApp::store_string_eeprom(char* write_string, uint8_t start_addr) {
+  // writing byte-by-byte to EEPROM
+  for (int i = 0; i < 19; i++) {
+      EEPROM.write(start_addr + i, write_string[i]);
+  }
+  EEPROM.commit();
+}
+
+void LoginApp::retrieve_string_eeprom(char* read_string, uint8_t start_addr) {
+  // reading byte-by-byte from EEPROM
+  for (int i = 0; i < 19; i++) {
+      byte readValue = EEPROM.read(start_addr + i);
+
+      if (readValue == 0xff || readValue == 0) {
+          // 0xff is the default value of an empty EEPROM cell
+          // 0 is the int value for the null character
+          read_string[i] = 0;
+          break;
+      }
+
+      char readValueChar = char(readValue);
+      read_string[i] = readValueChar;
+  }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+### Implementation Details (Server):
+1. The server side of the Login App has two endpoints: *create_user.py* and *login.py* that handles create new user and log in requests sent from the ESP respectively. We have a *user_info.db* database on the server that keeps track of the usernames and passwords. In this database, there is a table *authorized_users* with two columns: *USER* and *PASS*, storing usernames and passcodes.
+
+2. Both endpoints accesses the the user info database when handling requests. The requests to log in will simply check the log in credentials sent by the user against what's stored in the database then returns 'True' if they exist in the table and match or a corresponding error message otherwise.
+
+3. The requests to create user will store the credentials sent by the user in the table if the specified username is not already in the database. Otherwiser, it will notify the user the username already exists.
+
+Keyboard
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. Reusable utility keyboard class for apps to use.
+2. Allows users to input lowercase and uppercase letters, numbers, spaces, and special characters.
+
+### Implementation Details:
+The keyboard has four public methods callable by the app classes: handle_user_input, get_current_message, reset_message, and draw_screen.
+
+- The first is called to allow the user to enter characters on a keyboard. The function changes the keyboard state based on user inputs. The function returns true if the enter button has been pressed so apps know when the user is done typing; otherwise returns false.
+- The second is called to get the currently entered message.
+- The third is called to reset the current message when the user is done entering characters.
+- The fourth is called to output the UI of the keyboard to the screen.
+
+There are three possible keyboards to display: lower case letters, upper case letters, and numbers/symbols. The first two keyboards also include a button labeled "UC" and "LC", respectively, to toggle the capitalization of the letters. Each keyboard is split into four lines of characters. The last entry on each row is a button, so in order there are the buttons "123/ABC", "space", "delete", and "enter". The first button toggles between the letters keyboards and the numbers/symbols keyboard. The second button is the space character. The third button deletes an entered character. The fourth button enters the currently typed message.
+
+Notification
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. Users will get a notification displayed at the top of the screen anywhere on the phone notifying them if they have new unread messages or emails.
+
+### Implementation Details (ESP):
+In the phone class on every iteration of the loop function it calls check_notifications function in the NotificationsApp (child class of App). In this function it sends a request to the server every 10 seconds to see if there are any unread messages or emails. The function returns true if there are any unread messages or emails, in which case phone state switches to NOTIFICATION and NotificationApp's handle_user_input and draw_screen are called on every iteration of the Phone loop function.
+
+In the handle_user_input function if the user presses button 3 OR 3 seconds have elapsed since the notification was first displayed, then REMOVE_NOTIFICATION is returned and the phone wipe the screen and transitions back to the underlying app.
+
+The draw_screen function draws the notification at the top of the screen for 3 seconds if there is a new notification. If there is 1 unread message or email it also displays who it's from; otherwise it just displays the number of unread messages or emails.
+
+### Implementation Details (Server):
+1. On the server side, all GET request for notification will be handled at *'http://608dev-2.net/sandbox/sc/team28/final_project/python/Notification/notification.py'* and it needs a single argument *user*. 
+
+2. We have a database that keeps track of what to notify the user. This new database has two tables, *mail_table* and *message_table*, that deals with notifications from Messaging App and Mail app respectively. The *message_table* has 4 columns: *TIME_*, *USER*, *SENDER*, and *NOTIFY* while the *mail_table* has columns: *ID*, *USER*, *SENDER* and *NOTIFY*. *TIME_* and *ID* are used to keep track of the specific new message and mail, respectively, we are notifying the user about. Since we only want to notify the user once about new mail and new messages, values in *NOTIFY* column are first added to the corresponding table as 'YES' and updated to 'NO' whenever the device sends a request to retrieve notifications.
+
+3. When the ESP sends automated requests to notification server endpoint it will return the number of entries in the *message_table* that has *NOTIFY='YES'* for the specified user. The notification server handles getting email notification similar to the *checkUnread.py* server endpoint for the Mail App (more detailed below in the Maill App section). It first retrieves the specified user's saved email accounts from the *emailInfo.db*(detailed below in the Mail App section). Then if the user has saved email accounts, it goes through Gmail API verification flow to create a service instance and calls the Gmail API to get all the unread emails of all the email accounts the user has saved on the server. If the user's emails have unread emails and they are not yet in the notification database it first inserts the corresponding information into the *mail_table* with *NOTIFY='YES'*. Then the server will count the number of entries with *NOTIFY='YES'* and reset *NOTIFY='NO'*, similar to how it handles the notification for new messages. The server eventually returns the count in each table in JSON format. Note that if the count is 1 for either mail or message it will also return the *SENDER* of that entry.
+
+Home Screen
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. The user can view icons representing the apps available on the phone
+2. The user can navigate the screen using buttons 1 and 2
+3. The screen reflects the user's choice by inverting the color of the icon of the chosen app
+4. When the user presses button 3, the Phone moves to the chosen app's class
+
+### Diagrams:
+
+### Implementation Details:
+1. The Home Screen works as follows: 
+  - 6 icons are displayed on the screen
+  - There exist three buttons: 
+    - Button 1 maneuvers horizontally
+    - Button 2 maneuvers vertically
+    - Button 3 is an enter button
+  - When the user presses Buttons 1 or 2, the Home Screen invertz the colors of the selected icon to reflect the user's choice
+  - When the user presses Button 3, the Phone exits the Home Screen class and enters the selected app's class
+
+2. The handle_user_input functions handles the user's inputs and makes the appropriate changes. If buttons 1 or 2 are pushed, it updates the state variables, which reflect where on the screen the user is currently selecting an icon. If button 3 is pushed, this function returns a number corresponding to the selected app. For example, a 0 corresponds to the Home Screen app, while a 5 corresponds to the Game app. If button 3 is not pushed, this function returns an 8, which indicates to remain in the home app class. 
+
+3. The draw_screen function displays icons on the screen. If an icon is not selected (selection is determined by state variables), the draw_screen function uses the tft.pushImage function to display the regular version of the icon. If the icon is selected, the function instead displays a version of that icon where every pixel that was normally black is now white and every pixel that was white is now black. 
+
+Messaging App
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. User can send messages to other users using their usernames
+2. User can view the number of unread messages they have in the main menu of Messaging App
+3. User can check their past message history with a specific user
+
+Upon entering the Messaging App for the first time, the user would be initialized in the main selection menu where user can view the number of unread messages they have and select an option they want to proceed using button 2 and button 3. At any given point, the user can return to the main selection menu by long pressing button 1 and return to Home Screen of the phone by long pressing button 3. (We will sometimes refer to button 1 as RIGHT button, button 2 as DOWN button, and button 3 as CONFIRM button). If the user leaves the Messaging App then comes back later, they would be directed to the state they were previously on.
+
+### Diagrams:
+![FSM Diagram for Messaging App](./Images/MessagingFSM.jpg width="600px")
+
+### Implementation Details (ESP):
+The overarching flow of the Messaging App is shown in the above FSM diagram. Like all other apps, the Messaging App is a child class of the App class which gives it access to utilities like keyboard and it has its own *handle_user_input()* and *draw_sreen()* functions that get called every iteration.
+
+1. The main state machine consists of 4 states: *SELECT_MENU*, *CHECK_MESSAGE*, *SEND_MESSAGE*, and *DISPLAY_MESSAGE*. Our *handle_user_input()* function constantly checks for button presses and transition into the appropriate states. The specific button inputs the system is expecting is dependent on the current state the user is in. Similarly, *draw_screen()* function would draw the appropriate UI on the LCD screen for the given state and the user's whereabouts in the current state.
+
+2. In the *SELECT_MENU* state, the user can select an action directly from a list of options on the screen by using the DOWN button (button 2). The current selected option would be highlighted in green and the user can short press CONFIRM button(button 3) to confirm selection. If there are no new messages the option for View All Unread would be greyed out. This makes the select menu more intuitive and follows the convention of the buttons in other apps. While in the *SELECT_MENU* state, our system is periodically making a GET request to our messaging server checking for the number messages that are unread. Since the HTTP requests are handles on the second core in our system, this periodic check would not interrupt the user experience. The number of unread messages displayed on the screen would only be updated once the server returns the response.
+
+Code snippet demonstrating this logic gate and the selection FSM:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+uint8_t MessagingApp::handle_user_input() {
+
+  //other code of handle_user_input()
+
+  else if (text_state == SELECT_MENU){
+        if(checkingNum && !request_sending){
+            checkingNum = false;
+            unread_num = atoi(response);
+        }
+      }
+      //select option using DOWN button (button 2)
+        if (button_input_two == 1){
+            select_state ++;
+            if(select_state > SELECT_HISTORY){
+                if(unread_num > 0){
+                    select_state = SELECT_UNREAD;
+                }
+                else{
+                    select_state = SELECT_SEND;
+                }
+            }
+        }
+
+      //if(button_input_three == 1) transition user to the currently selected state
+
+      if(millis()-timer >= notif_period){
+        checkUnreadNum();
+        timer = millis();
+      }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2. If the user select View All Unread in the main menu, the system would send a POST request to get all the unread messages that can fit in the response buffer and then directly transition to *DISPLAY_MESSAGE* state with *bool loading* set to true.
+
+3. In the *SEND_MESSAGE* state and the *CHECK_MESSAGE* state, the *draw_screen()* function will draw a keyboard and text boxes prompting the user to input the relevant information. We constantly call *keyboard.handle_user_input()* tracks the key that the user is currently on. We also get and display the currently typed word on the screen using *keyboard.get_current_message()*. Specifically, when sending a message the user would need to first enter the recepient. Once the user presses enter, which is detected through through a few logic gates, we store the recepient in a variable then prompt the user to enter their message. Once they press enter again, we store the message in a variable and we call our function to send a POST request to our server then we transition the user to the *DISPLAY_MESSAGE* state with *bool sending* set to true. Similarly, when checking messages the user would need to first enter the person they would like to check messages with and then the number of messages they would like to see the history. Once all inputs are confirmed, the system transitions to the the *DISPLAY_MESSAGE* state with *bool loading* set to true.
+
+4. For the states where the user need the server response to proceed (like the ones previously mentioned), a loading animation will be displayed. This is handled by a logic gate and the  class variables *bool loading* and *bool sending*. IUn the *DISPLAY_MESSAGE* state of *draw_screen()* function, *draw_loading()* will be called if *loading==true* or *sending==true*. This acts as an intermediate state before the actual server response is drawn. In *DISPLAY_MESSAGE* state in the *handle_user_input()* function*, *loading* or *sending* will be set to *false* and then the server response would be parsed accordingly once the request is done sending. Similarly, We are using another variable *bool checkingNum* to determine when to update the *unread_num* variable and display the number of new messages. 
+
+5. While the user is viewing message history or unread messages, they are able to scroll through all messages returned by the server using RIGHT and DOWN buttons. (If the returned messages do not fit on the screen.)
+
+
+### Implementation Details (Server):
+The messaging server endpoint handles different HTTP requests sent by the user and respond accordingly:
+  - Stores all messages sent by users in a database
+  - Updates a the notification database so that when the ESP sends requests to the notification server endpoint it can respond properly
+  - Responds with message history between 2 users
+  - Responds with the number of unread messages
+
+1. We created a message database and a notification database (detailed in the notifcation server section) on the team server. All HTTP requests for the messaging app would be addressed to *'http://608dev-2.net/sandbox/sc/team28/final_project/python/MessagingApp/messaging_server.py'*. Inside this database, we are keeping 2 separate tables for each user, one storing all messages a user sent and one storing all messages a user received. The names of the tables are generated on the server side once the HTTP request is received. Specifically, the user *username* would have a table called *usernameSENT* and *usernameRECEIVED*. 
+
+2. The messaging app server handles both POST requests and GET requests. However, all user generated requests (to send a message or check messages) are all POST requests because we need to update the values in the table(discussed more in detail later). The only GET requests sent to the server should be the periodic checks for new messages sent by the microcontroller automatically. 
+
+3. All POST requests sent by the user needs to have an argument *action* which tells the server what to look for next. When the user is sending a message, microcontroller sets *action = send*. When the user wants to check messages, the system generates the POST request with the required body *action=send&sender=(username of the sender)&receiver(username of the receiver)&message=(the message being sent)*. The server will then process this information and store the message in the corresponding tables (*senderSENT* and *receiverRECEIVED*) with a timestamp. The *usernameSENT* tables have 3 columns: *TIME_ timestamp, RECEIVER text, MESSAGE text* while the *usernameRECEIVED* tables has a additional columns: *READ text* to indicate whether the receiver has checked the message. This information is used when microcontroller sends the periodic GET requests to check for new messages. The server also stores the sender, receiver, and timestamp in the notification database of the *NOTIFY* column marked as 'YES'. Once the message has being stored in the databases properly, the server sends a confirmation back to the microcontroller. 
+
+4. When the user wants to check messages, the POST request need the required body *action=check&me=(user checking)&other(username of the user wants to check messages for)&num=(number of messages the user wants to see)&size=(size of response buffer)*. Once the server gets the POST response for checking messages, it first checks if these two users have previously sent or received messages(if the corresponding tables exist in the database). If these tables don't exist, the server responds "There are no messages between you and (other username)". If the server locates these tables, specifically *meSENT* and *meRECEIVED*, the server then selects the entries in *meSENT* where *RECEIVER=other* and the entries in *meRECEIVED* where the *SENDER=other*. Before sending these entries back to the microcontroller, the server combines the entries from these two tables and selects the specified number (by the user) of most recent messages (if they fit in the response buffer size) and adds the corresponding sender of the message to the response. The server also updates the values in the *READ* column of *meRECEIVED* table to 'YES' (if they were previously marked as 'NO') for all messages being sent back to the microcontroller. If they specified number of messages do not fit in the response buffer size specifiec, the server will return the maximum number of messages that can fit.
+
+5. Checking unread messages operates similarly. The only difference is that if the user chooses to check all unread messages, the microcontroller sets *other=UN_READ* in the POST request. This way the server knows to select all entries in *meRECEIVED* that has 'NO' in its *READ* column and update these to 'YES', then send back all entries to the microcontroller. (again if they fit in the response buffer size specified.) The messaging server will also set *NOTIFY* column to 'NO' for all the messages the user checked in the notification database, in case the user checks his messages before a request for notification is sent.
+
+6. For all POST requests to check messages, the server returns a dictionary as JSON formatted strings to allow the system to parse and extract different information from thr server response easily. Specifically, the server response looks like this *{"(index of message ordered by time)":{"date":"(time message was sent/receivd)", "message": "(sender: message)""}, "end": "{} messages between you and {} are shown".format(num_msg, user_other), "length": (number of messages returned)}*.
+
+
+Email App
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. User can log into a gmail account
+2. System saves  users' email accounts
+2. Users can check the number of unread mails
+3. Users can read new emails sent to them
+4. Users can write emails and send them to any email accounts
+
+Upon entering the Mail App for the first time, the user would be initialized in the log in menu where user can select an option they want to proceed using button 2 and button 3. The options in the log in menu are either select an email account they have saved(given that they have accounts saved on the server) or log into a new email account. At any given point, the user can return to the log in menu by long pressing button 1 and return to Home Screen of the phone by long pressing button 3. If the user leaves the Mail App then comes back later, they would be directed to the state they were previously on.
+
+### Diagrams:
+![FSM Diagram for Clock App](./Images/EmailFSM.jpg width="850px")
+
+### Implementation Details (ESP):
+The overarching flow of the Mail App is shown in the above FSM diagram. It's built on top of the FSM we designed for the Messaging App but has more comlicated operations for state transitions. It also utilizes a similar selection menu FSM previously designed in the Messaging App. Like all other apps, the Mail App is a child class of the App class which gives it access to utilities like keyboard and it has its own *handle_user_input()* and *draw_sreen()* functions that get called every iteration. 
+
+1. The main state machine consists of 5 states: *LOGIN_MENU*, *USER_LOGIN*, *OPTION_MENU*, *SEND_MAIL*, and *DISPLAY_MAIL*. Our *handle_user_input()* function constantly checks for button presses and transition into the appropriate states. The specific button inputs the system is expecting is dependent on the current state the user is in. Similarly, *draw_screen()* function would draw the appropriate UI on the LCD screen for the given state and the user's whereabouts in the current state.
+
+2. In the *LOGIN_MENU* state, the user will be prompted to log in a new email or select the email account that's already saved on the server. It also displays how many email accounts the user has saved on the server. If the user selects one the email accounts saved, the system will transition into *OPTION_MENU* state. If the user selects to log into a new email, the system would transition into the *USER_LOGIN* state.
+
+3. In the *USER_LOGIN* state the user is prompted to enter email credentials. If they log in successully, the system transitions into *OPTION_MENU* state. Otherwise, it will display an error message and prompt the user to try again or go back to log in menu.
+
+4. In the *OPTION_MENU*, the user can: Check how many unread emails they have, view their emails or send a new email
+
+5. The rest of the states all behave similarly to those of the Messaging App. If, for example, a user wants to send a new email, s/he will be transferred to the correct state. There, the program will ask them to input a recipient, a subject, and a message. Upon completion, the program verifies all fields are filled and sends a http request to the server code (discussed above) then transitions into the *DISPLAY_MAIL* state, which will either display a confirmation or *Unsuccessfull* (if Gmail API was unable to send the email). At any given point, the user can also move back to the *LOGIN_MENU* (to switch email accounts) by long pressing button 1. They can go to the *OPTION_MENU* state at any time by long pressing button 2. As always, long pressing button_three takes the user back to the Home Screen.  
+
+6. When the user wants to view unread messages, they can select the option in *OPTION_MENU* which will then make the corresponding request to the server to return all unread messages(limited to response buffer size) and then transition the user to *DISPLAY_MAIL* state with *loading* set to *true*. Similar to how *loading* variable is used in the Messaging App, a loading animation will be displayed until the request is done.
+
+7. In *DISPLAY_MAIL* state, the user will be able to scroll through unread emails one by one if there are more than one unread email. If not all of the user's unread mails can be returned in response buffer, the user will be prompted to push *DOWN(button_two)* to request another batch of unread emails from the server. 
+
+
+### Implementation Details (Server):
+There are three different server endpoints on the server the mail app could potentially make HTTP requests to. The server will then respond accordingly to either check users' input credentials or make appropriate calls to Gmail API.
+
+ 1. First server endpoint at *"http://608dev-2.net/sandbox/sc/team28/final_project/python/EmailApp/sendMail.py* takes only POST requests with body arguments: *subject, messsage, sender, receiver*. It first calls *get_service* to go through Gmail API's authorization flow and creates a service instance. Then it uses information from the HTTP requests to call *create_message* and *send_message*, which converts them to MIME email messages and encodes messages as base64url strings before calling Gmail API's *messages.send()*. If no error returned from Gmail API calls, the server returns a confirmation stating "Your Email has been sent", otherwise it returns "Unsuccessful". 
+
+2. Second server endpoint at *"http://608dev-2.net/sandbox/sc/team28/final_project/python/EmailApp/checkUnread.py"* takes both GET and POST requests. A GET request will simply be responded with the number of unread messages the specified user has while a POST request will be responded with all the unread mails that can fit in the specified response size and also mark all return mails as read in the user's inbox. A GET request only needs the argument *user* while a POST request body has to specify the user and response size. All unread messages will e returned as JSON formatted strings so the ESP can easily parse out the information. Note that if there are more unread mails than what the response size limits that returned JSON will have *json["More"] = "Y"*. The JSON also indicates how many mails are returned to the ESP. Similar to previously discussed, this server code also call *get_service* to get a GMail API service instance before making calls to get messages.
+
+3. The third server endpoint at *"http://608dev-2.net/sandbox/sc/team28/final_project/python/EmailApp/email_login.py"* also takes both GET and POST requests. A GET request will be responded with the number of accounts that are saved on the server for that specific user. A POST request is used when the user wants to log into a new account. Since all GMail API has limitations on the email accounts we can use(all emails have to be previously listes when we set up the API service on Google Workspace Platform and have to give autorizations first), we cannot log into any email accounts we want on the ESP. And we also can't directly check user's credentials with Google, we are essentially using this proxy server to check credentials against accounts and credentials we hardcoded on the server to simulate the log in process. If the account the user is trying to log in is one of our listed accounts and matches the password we put on the server, the server will save that account for user to use in the future and log the user into the email app. Otherwise, the server would respond with the appropriate error message.
+
+
+Clock App
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. The user is able to see their local time
+2. The user is able to search and view the local time of any city in the world
+3. The user can view favorite locations screen. They can add and delete favorite locations.
+5. The user can view a help screen.
+6. The user can see both digital and analog displays of the time for searched and favorited cities.
+
+### Diagrams:
+![FSM Diagram for Clock App](./Images/clockAppFsm.jpg width="850px")
+
+### Implementation Details (ESP):
+In the home state it displays the user's local times, as well as buttons to take them to the favorites, search, or help states.
+
+The search state has a text box for the user to enter a city (uses the keyboard), as well as a back button (goes to home state) and a submit button to send an HTTP GET request with the city to the server.
+
+All local times are gotten by sending an HTTP GET request to the server with the city to get UTC time split into hours, minutes, seconds, and milliseconds, as well as the timezone offset for that city from UTC time. The response is returned in JSON so it can be parsed using ArduinoJSON.
+
+In the favorites state it displays to the user all of their favorite cities (up to 5) and buttons to go back to the home screen, delete a city, and add a new city. If the user clicks on one of the cities they are taken to the clock display state where it shows the time for that city.
+
+The favorite cities and timezones are stored as two lists on the ESP, and are only updated on the initial request to the server and on requests when a city is added or deleted.
+
+In the help state it displays text detailing the functionality of all the buttons for each screen.
+
+The display state shows a digital display of the time. The user can press button 1 to take them back to the home state and press button 2 to toggle the analog display. The analog display is drawn using trigonometry to calculate where to draw the hour, minute, and second hands.
+
+### Implementation Details (Server):
+
+GET requests for time:
+Sends an HTTP GET request to the OpenWeatherAPI to get the timezone offset from UTC time for the given city, then uses the Python datetime library to get the current UTC time. It returns all this data in JSON format.
+
+GET requests for favorites:
+Selects all the favorite cities for a user from an sqlite3 database. Then sends a GET request to OpenWeatherMap API for each city to get its timezone offset from UTC. Returns the cities and timezones as two lists in a JSON string.
+
+POST requests for favorites:
+If the request includes a parameter "delete" that is set to true then it deletes the city provided in the request iff the city is in the database for the user. Otherwise it inserts the city iff the city is not already in the database for the user and the number of cities in the database for the user is less than 5.
+
+Code snippet demonstrating how the analog display is drawn:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+void ClockApp::draw_analog() {
+	// erase old hour, minute, second hands as needed
+	if (hour != last_hour) {
+		draw_hour_hand(last_hour, TFT_WHITE);
+	}
+	if (minute != last_minute) {
+		draw_minute_second_hand(last_minute, TFT_WHITE);
+	}
+	if (current_second != last_second) {
+		draw_minute_second_hand(last_second, TFT_WHITE);
+	}
+
+	// draw new hour, minute, second hands
+	draw_hour_hand(hour, TFT_BLACK);
+	draw_minute_second_hand(minute, TFT_BLACK);
+	draw_minute_second_hand(current_second, TFT_RED);
+}
+
+void ClockApp::draw_clock_face() {
+	// draw clock background
+	tft.fillCircle(64, 80, 50, TFT_WHITE);
+
+	// draw small dot at the center of the clock
+	tft.fillCircle(64, 80, 2, TFT_BLACK);
+
+	// set text size/color
+	tft.setTextSize(2);
+	tft.setTextColor(TFT_BLACK, TFT_WHITE); // set color of font to black foreground, white background
+
+	// draw numbers on the clock including 12, 3, 6, 9
+	tft.drawString("12", 52, 36);
+	tft.drawString("3", 96, 72);
+	tft.drawString("6", 58, 113);
+	tft.drawString("9", 20, 72);
+
+	// draw two small lines between each number on the clock
+	for (uint8_t i = 0; i < 12; i++) {
+		if (i != 0 && i != 3 && i != 6 && i != 9) {
+			tft.drawLine(64 + 45*cos(i*PI/6), 
+						80 - 45*sin(i*PI/6), 
+						64 + 50*cos(i*PI/6), 
+						80 - 50*sin(i*PI/6), 
+						TFT_BLACK);
+		}
+	}
+}
+
+void ClockApp::draw_hour_hand(uint8_t hour_type, int color) {
+	uint8_t hour_radians;
+	if (hour_type >= 12) {
+		hour_radians = 11 - ((hour_type - 12) - 4);
+	} else {
+	if (hour_type <= 3) {
+		hour_radians = 3 - hour_type;
+	} else {
+		hour_radians = 11 - (hour_type - 4);
+	}
+	}
+	tft.drawLine(64, 
+				80, 
+				64 + 20*cos(hour_radians*PI/6), 
+				80 - 20*sin(hour_radians*PI/6), 
+				color);
+}
+
+void ClockApp::draw_minute_second_hand(uint8_t minute_second_type, int color) {
+	uint8_t minute_second_radians;
+	if (minute_second_type <= 15) {
+		minute_second_radians = 15 - minute_second_type;
+	} else {
+		minute_second_radians = 59 - (minute_second_type - 16);
+	}
+	tft.drawLine(64, 
+				80, 
+				64 + 28*cos(minute_second_radians*PI/30), 
+				80 - 28*sin(minute_second_radians*PI/30), 
+				color);
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Weather App
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. User can get weather information at their current location
+2. User can get weather information at any location of their choice
+3. User can pick from their top 5 most looked up cities
+4. Weather information is displayed on the screen is an easily interpretable format
+
+Upon entering the app, the user is shown a home screen, and is prompted with the different button inputs needed to perform their corresponding actions. If the user presses button 1, the app gets the weather data at their current location, and then displays it on the screen. If the user presses button 2, they are taken to the keyboard input screen in which they can type in a city of their choosing, and then the weather data will be displayed. If an invalid city name is entered, the user will be told that their input is invalid, and will be prompted to return to the main screen. If the user short presses button 3, they are taken to a screen where their top 5 most looked up cities are displayed, where they can then choose a city and display its data. 
+
+### Diagrams:
+
+![FSM Diagram for Weather App](./Images/weatherAppFsm.jpg width="850px")
+
+### Implementation Details:
+
+1. Upon pressing button 1, the user is able to get the weather at their current location. The way this functionality was implemented is through our getLocalWeather and parseWeather functions. Upon pressing button 1, the getLocalWeather function is called with the global variables lat and lon as the inputs. These variables are initialized upon logging into the phone and store the users latitude and longtitude coordinates. The function performs a GET Request to our OpenWeather.py file located on our server, which then makes a GET Request to the OpenWeatherAPI, acquires all the weather information for that location, and then returns all the information in a string, separated by & characters. Once the getLocalWeather() function is complete, the parseWeather function is called, with "Your current location" and local = true as the inputs. The parseWeather function parses the response buffer from getLocalWeather by using strtok to separate the strings by their & characters, and then assigning them to their corresponding variables: temperature, humidity, and weather. Once the parsing is complete, parseWeather checks the boolean local. Since it is true in this case, it does nothing, but otherwise it sends a POST request to our WeatherApp.py file, which increments the number of times the user has looked up the specific city in our database. Once both these steps are complete, we transition into the DISPLAY_INFO state, in which the information is displayed to the user. We use boolean variables parsed and loading, to make sure all the operations occur in the correct order. 
+
+Code snippet demonstrating how this operation order is handled:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if(loading && !request_sending && parsed){
+    parsed = false;
+    loading = false;
+    if(gotWeather){
+        weather_state = DISPLAY_INFO;
+        prev_state = SELECT_MENU;
+    }else{
+        weather_state = FAVORITES;
+        prev_state = SELECT_MENU;
+    }
+    gotWeather = false;
+}
+if(loading && !request_sending && !parsed){
+    if(gotWeather){
+        parseWeather(city, local);
+        local = false; 
+        parsed = true;
+    }else{
+        parseResponse(response);
+        parsed = true;
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+2. Upon pressing button 2, the user is able to get the weather at any location of their own choosing. For this functionality, we interfaced with the keyboard control system to allow the user to input their own city. Once the user presses Enter, this city is then passed into getWeather and parseWeather. If the city is valid, the process is the same as previously mentioned, but with the city passed into the function getWeather instead of getLocalWeather. This function goes about the same process as the local weather one, but instead takes in a city name as an input rather than coordinates. The information is acquired, then parsed by parseWeather(). In this case, our local boolean will be false, and after parsing the response, parseWeather will make a POST request to our database, and will update the number of times this user has searched this city by 1. If the city input is invalid however, which can be detected through the response received from the OpenWeather API, the system then transitions into the ERROR state. In this state, the user is told that their input was invalid, and is prompted to press any button to return to the home state. 
+3. Upon short pressing button 3, the user is able to pick from their top five most looked up locations. When this button is pressed, a GET request is sent to the weather.py file in our server. This request parses our database for the top 5 locations associated with the current user that have the highest count value. These locations are then returned in a string, with each location separated by an & character. We then run our parseResponse() function, which parses the response received and stores the locations in the corresponding variables labelled fave1-5. The app then transitions into the FAVORITES state in which these locations are listed on the screen and the user can select between them. The selected location is then inputted through the getWeather and parseWeather process, and its information is then displayed on the screen.
+
+Code snippet demonstrating how server handles this request:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+elif (request['method'] == 'GET'):
+        if('user' not in request['args']):
+            return "GET Request missing user"
+        else:
+            values = c.execute('''SELECT location FROM weather_table WHERE user = ? ORDER BY count DESC LIMIT 5;''', (request['values']['user'],))
+            ret = ''
+            for val in values:
+                if val[0] != '' and val[0] != ' ':
+                    ret += val[0] + '&'
+            return ret  
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+4. The function draw_screen handles how the information is displayed on the screen depending on the specific state. For all of the states, we check whether the variable loading is true. If yes, then this means we are getting the information and cannot display to the screen yet so we play the loading animation. Otherwise, we check whether we came to that state from another one and if so, we restart the screen with tft.fillScreen(TFT_BLACK). After these checks, we show the information required of each state. In SELECT_MENU, we print the instructions for interacting with the device. SELECT_PLACE calls the keyboard so that the user can type in their input. In the FAVORITES state, we extract the cities with the most frequencies and assign them to be cities one through five. We then display all these cities on the FAVORITES screen. The user’s input to button two changes the value of location_state. The arrow showing which favorite we are currently at changes depending on this value. For the error state, we indicate to the user that they have entered an invalid city and they are prompted to enter a new city. DISPLAY_INFO prints all the information of the city from the OpenWeather API for the user to read.
+
+Game App
+-------------------------------------------------------------------------------
+### Capabilities Overview:
+
+1. User can access a game screen, where they can choose a difficulty level for their game
+2. User can play a game at their chosen difficulty level
+3. User can view their score on the most recent round when they lose the game
+4. User can view a leaderboard of the the highest scoring users in the game
+
+### Diagrams:
+
+![FSM Diagram for Game App](./Images/GameAppFSM.jpg width="850px")
+
+### Implementation Details:
+
+To implement this app, we made use of the three state machines shown above. The overarching one, called game_state is the one the user encounters immediately upon entering the app. Then, they can press 2 to enter the leaderboard or 1 to enter the game. If they press 1, they encounte the two remaining state machines. Playing_state encodes whether the user is currently choosing a difficulty level, playing the game, or losing. If the user is choosing a difficulty level, the code uses menu_state to keep track of the level they have currently chosen.
+
+Every time the user presses the button, the beach ball bounces up  Otherwise, the ball lowers by 1 pixel every loop due to gravity. The handle_user_input function is responsible for updating the ball and the obstacles. Therefore, whenever obstacle 1 or obstacle 2 is off the screen, this function resets that obstacle's position to the right end of the screen. Otherwise, if an obstacle doesn't need to be reset, this function decrements their x coordinate by 1 so they constantly move to the left. 
+
+The draw_screen function is responsible for showing the beach ball and the obstacles immediately before or after it. In order to reduce flickering, instead of re-filling the screen on every loop, it redraws the objects at their new locations and fills in the old location with white pixels. It also checks for collisions by using a similar strategy as in Regular Exercise 6. This function treats the beach ball and all obstacles as squares and checks for overlaps. In the case of an overlap, the draw_screen function calls reset().
+
+The reset function draws the GAME OVER screen, including the user's final score, then makes a POST request to the score database, with the body containing the user's current score. The request handler in score_database.py adds the score, username, and level of the game to the score table. If the current score is highest in the table for that user and difficulty level, it returns "You beat your highest score". Otherwise, it returns "your highest score was ", followed by the user's highest score. The reset function receives this string and prints it to the screen. It then re-initializes the score to be 0, the beach ball's location to be the middle of the screen and the obstacles to appear at the right hand of the screen at random heights. Then, when a user presses button 3, they are taken back to the screen to choose their difficulty level and play the game.
+
+The Leaderboard makes a GET request to the server code, which then makes three queries to the score table. The first query is find the highest scoring user, the second to find the highest scoring user in a table excluding the previous user, and the third to do the same excluding the first and second highest scoring users. It then returns the users and their scores in a json. The ESP code prints out each user and score to the TFT.
+
+Music App
+-------------------------------------------------------------------------------
+
+### Capabilities Overview:
+
+1. User can select and play songs through their MP3.
+2. User can pause/play songs.
+3. User can skip/reverse songs.
+
+Upon entering the app, the user is shown an intro screen and is prompted to press any button to play a song. Once a button input is received, the user transitions to the selection screen in which all their tracks are displayed, numbered 1-10. The user can select any of the tracks from the menu, which will then start playing through the MP3. While a song is playing, the user is able to use the buttons to pause/play the song, skip/rewind the song, or return to the home screen. 
+
+### Diagrams:
+
+![FSM Diagram for Music App](./Images/music_fsm.jpg width="850px")
+
+### Implementation Details:
+
+For implementing this app, we interfaced heavily with the DFPlayerMini module and library within Arduino. The way the module works is that the user can download and store their songs independently on their SD card, insert the card into the module, and then use our application to select and play these songs.
+
+We installed the library DFRobotDFPlayerMini (we set it to myDFPlayer) which comes with the necessary functions like myDFPlayer.pause() and myDFPlayer.readFileCounts(). This was initialized with all the libraries that we included at the top of the file. Along with this, we initialize an instance of the HardwareSerial class and enter in the value of 2 so that it accesses UART 3. This is needed for our setup_Speaker function which sets up the Serial port object and establishes the connection to the DFPlayerMini. Once the DFPlayerMini is online, we can access the necessary functions.
+
+1. The application starts off in the MENU state, in which the user is prompted to press any button to play a song. Upon receiving any button input, the system transitions into the SELECT state, but on this transition, we call the function myDFPlayer.readFileCounts(), which acquires the number of songs stored on the SD card, and stores it in the variable song_count. Upon entering the SELECT state, the available tracks are displayed on the screen, labelled TRACK 1-10, and the user can then press the buttons to iterate through them. We use a variable current_song to keep track of the song currently selected, and increment and decrement it accordingly. Upon pressing button 3 on this screen, the function myDFPlayer.play(current_song + 1) is called, which starts playing the currently selected song and transitions the system to the SONG state. The reason we use current_song + 1 is because our variable starts at 0, but within the DFPlayer system, they start labelling the tracks at 1. 
+2. While in the SONG state, if button 1 is pressed, depending on the status of the variable song_state, we call either myDFPlayer.pause(), or myDFPlayer.start(), to pause/resume. song_state is true if the song is playing, and false if it is paused. 
+
+Code snippet demonstrating how this operation is handled:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+if (button_input_one > 0){ //pause and play button
+  if (song_state == true){
+    myDFPlayer.pause();
+    song_state = false;
+  }else{
+    myDFPlayer.start();
+    song_state = true; 
+  }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+3. While in the SONG state, if button 2 is short pressed, we call myDFPlayer.next(), to skip to the next song. If button 2 is long pressed, we call myDFPlayer.previous(), to go to the previous song. 
+
+Code snippet demonstrating how this operation is handled:
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+if(button_input_two == 1){
+  myDFPlayer.next(); //skip button
+  current_song ++;
+  current_song %= song_count;
+  tft.drawString("          ", 50, 110);
+  song_state = true;
+}
+if(button_input_two == 2){
+  myDFPlayer.previous(); // go back button
+  current_song --;
+  current_song %= song_count;
+  tft.drawString("          ", 50, 110);
+  song_state = true;
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Weekly Demo Videos
+===============================================================================
+Week 1
+-------------------------------------------------------------------------------
+<iframe width="560" height="315" src="https://www.youtube.com/embed/mHC38co1NMg" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/B3BJBKRPoR8" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/TiSe5QtGjbk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+Week 2
+-------------------------------------------------------------------------------
+<iframe width="560" height="315" src="https://www.youtube.com/embed/Y7PnVkVBfzo" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/l0tDNa6G3pk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/fvtZwkl5G3k" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/jb4JH5l1kxU" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/lhTQqpsp45I" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+Week 3
+-------------------------------------------------------------------------------
+<iframe width="560" height="315" src="https://www.youtube.com/embed/nZipdeupqUU" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/A-XEAT-VtaI" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/pToG-XN9MnM" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/xVZdbDL6qmk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/gOR2fx3d-XY" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/ZKIua0VKXFk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+Week 4
+-------------------------------------------------------------------------------
+<iframe width="560" height="315" src="https://www.youtube.com/embed/kLMHBBPD8Go" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/dhOwYS0K6Q4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/koRu_M8Bn4Y" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/H7uGeIoW0Mk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/LgLBqAGzXD4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/tPkw3z7rZSU" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/a7mcJGx7Jvo" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/K3lIPWRqLvs" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/kLMHBBPD8Go" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/dhOwYS0K6Q4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/koRu_M8Bn4Y" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/H7uGeIoW0Mk" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/LgLBqAGzXD4" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/tPkw3z7rZSU" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/a7mcJGx7Jvo" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/K3lIPWRqLvs" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+style class="fallback">body{visibility:hidden}</style><script>markdeepOptions={tocStyle:'long'};</script>
+<!-- Markdeep: --><script src="https://casual-effects.com/markdeep/latest/markdeep.min.js?" charset="utf-8"></script>
